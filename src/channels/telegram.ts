@@ -48,6 +48,68 @@ async function sendTelegramMessage(
   }
 }
 
+const MAX_LENGTH = 4096;
+
+/**
+ * Split text into chunks that respect content boundaries.
+ * Priority: code block boundaries > double newline (paragraph) > single newline > space > hard cut.
+ */
+export function splitMessage(text: string): string[] {
+  if (text.length <= MAX_LENGTH) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > MAX_LENGTH) {
+    let splitAt = -1;
+
+    // 1. Try to split at a code block boundary (``` on its own line)
+    const codeBlockPattern = /\n```\n/g;
+    let match;
+    while ((match = codeBlockPattern.exec(remaining)) !== null) {
+      const pos = match.index + match[0].length;
+      if (pos <= MAX_LENGTH && pos > splitAt) {
+        splitAt = pos;
+      }
+    }
+
+    // 2. Try to split at a paragraph boundary (double newline)
+    if (splitAt === -1) {
+      const lastParagraph = remaining.lastIndexOf('\n\n', MAX_LENGTH);
+      if (lastParagraph > MAX_LENGTH * 0.3) {
+        splitAt = lastParagraph + 2;
+      }
+    }
+
+    // 3. Try to split at a single newline
+    if (splitAt === -1) {
+      const lastNewline = remaining.lastIndexOf('\n', MAX_LENGTH);
+      if (lastNewline > MAX_LENGTH * 0.3) {
+        splitAt = lastNewline + 1;
+      }
+    }
+
+    // 4. Try to split at a space
+    if (splitAt === -1) {
+      const lastSpace = remaining.lastIndexOf(' ', MAX_LENGTH);
+      if (lastSpace > MAX_LENGTH * 0.3) {
+        splitAt = lastSpace + 1;
+      }
+    }
+
+    // 5. Hard cut (last resort)
+    if (splitAt === -1) {
+      splitAt = MAX_LENGTH;
+    }
+
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 /**
  * Truncate a string to a maximum length, appending "..." if truncated.
  */
@@ -279,20 +341,12 @@ export async function sendPoolMessage(
   const api = poolApis[idx];
   try {
     const numericId = chatId.replace(/^tg:/, '');
-    const MAX_LENGTH = 4096;
-    if (text.length <= MAX_LENGTH) {
-      await sendTelegramMessage(api, numericId, text);
-    } else {
-      for (let i = 0; i < text.length; i += MAX_LENGTH) {
-        await sendTelegramMessage(
-          api,
-          numericId,
-          text.slice(i, i + MAX_LENGTH),
-        );
-      }
+    const chunks = splitMessage(text);
+    for (const chunk of chunks) {
+      await sendTelegramMessage(api, numericId, chunk);
     }
     logger.info(
-      { chatId, sender, poolIndex: idx, length: text.length },
+      { chatId, sender, poolIndex: idx, length: text.length, chunks: chunks.length },
       'Pool message sent',
     );
   } catch (err) {
@@ -684,24 +738,20 @@ export class TelegramChannel implements Channel {
         };
       }
 
-      // Telegram has a 4096 character limit per message — split if needed
-      const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text, options);
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          // Only reply on the first chunk
-          const chunkOptions = i === 0 ? options : {};
-          await sendTelegramMessage(
-            this.bot.api,
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-            chunkOptions,
-          );
-        }
+      // Split respecting content boundaries (code blocks, paragraphs, etc.)
+      const chunks = splitMessage(text);
+      for (let i = 0; i < chunks.length; i++) {
+        // Only reply on the first chunk
+        const chunkOptions = i === 0 ? options : {};
+        await sendTelegramMessage(
+          this.bot.api,
+          numericId,
+          chunks[i],
+          chunkOptions,
+        );
       }
       logger.info(
-        { jid, length: text.length, replyToMessageId },
+        { jid, length: text.length, replyToMessageId, chunks: chunks.length },
         'Telegram message sent',
       );
     } catch (err) {
