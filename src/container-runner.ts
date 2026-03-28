@@ -50,6 +50,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  streamText?: string; // Accumulated text for streaming preview
 }
 
 interface VolumeMount {

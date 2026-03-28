@@ -92,8 +92,7 @@ async function sendWithRetry(
       return;
     } catch (err: unknown) {
       const isLast = attempt === SEND_RETRY_ATTEMPTS - 1;
-      const code =
-        (err as any)?.error?.code || (err as any)?.code || '';
+      const code = (err as any)?.error?.code || (err as any)?.code || '';
       const httpCode = (err as any)?.error_code ?? 0;
       const isTransient =
         /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|EPIPE/i.test(
@@ -335,7 +334,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Progressive streaming: show live preview on edit-capable channels
+  const draftStream = channel.createDraftStream?.(chatJid);
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
+    // Streaming preview — update draft with accumulated text
+    if (result.streamText && draftStream) {
+      const text = result.streamText
+        .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+        .trim();
+      if (text) draftStream.update(text);
+    }
+
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -346,10 +356,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        try {
-          await sendWithRetry(channel, chatJid, text);
-        } catch (err) {
-          logger.error({ group: group.name, err }, 'Failed to send agent output after retries');
+        if (draftStream) {
+          const ok = await draftStream.finish(text);
+          if (!ok) {
+            // Text exceeded maxLength — fall back to regular send
+            try {
+              await sendWithRetry(channel, chatJid, text);
+            } catch (err) {
+              logger.error(
+                { group: group.name, err },
+                'Failed to send agent output after retries',
+              );
+            }
+          }
+        } else {
+          try {
+            await sendWithRetry(channel, chatJid, text);
+          } catch (err) {
+            logger.error(
+              { group: group.name, err },
+              'Failed to send agent output after retries',
+            );
+          }
         }
         outputSentToUser = true;
       }
@@ -368,6 +396,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  // Clean up draft stream if agent produced no output
+  if (!outputSentToUser && draftStream) {
+    await draftStream.cancel();
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —

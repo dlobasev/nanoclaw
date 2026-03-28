@@ -5,6 +5,7 @@ import { Api, Bot } from 'grammy';
 import OpenAI from 'openai';
 
 import { ASSISTANT_NAME, GROUPS_DIR, TRIGGER_PATTERN } from '../config.js';
+import { createDraftStream, DraftStream } from '../draft-stream.js';
 import { getLatestMessage, getMessageById, storeReaction } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -346,7 +347,13 @@ export async function sendPoolMessage(
       await sendTelegramMessage(api, numericId, chunk);
     }
     logger.info(
-      { chatId, sender, poolIndex: idx, length: text.length, chunks: chunks.length },
+      {
+        chatId,
+        sender,
+        poolIndex: idx,
+        length: text.length,
+        chunks: chunks.length,
+      },
       'Pool message sent',
     );
   } catch (err) {
@@ -827,9 +834,7 @@ export class TelegramChannel implements Channel {
       await this.bot.api.raw.setMessageReaction({
         chat_id: numericId,
         message_id: msgId,
-        reaction: emoji
-          ? [{ type: 'emoji', emoji: emoji as any }]
-          : [],
+        reaction: emoji ? [{ type: 'emoji', emoji: emoji as any }] : [],
       });
       logger.info({ jid, messageId, emoji }, 'Telegram reaction sent');
     } catch (err) {
@@ -847,6 +852,25 @@ export class TelegramChannel implements Channel {
       return;
     }
     await this.sendReaction(jid, latest.id, emoji);
+  }
+
+  createDraftStream(jid: string): DraftStream {
+    const numericId = jid.replace(/^tg:/, '');
+    return createDraftStream({
+      sendMessage: async (text) => {
+        const msg = await this.bot!.api.sendMessage(numericId, text);
+        return msg.message_id;
+      },
+      editMessage: async (messageId, text) => {
+        await this.bot!.api.editMessageText(numericId, messageId, text);
+      },
+      deleteMessage: async (messageId) => {
+        await this.bot!.api.deleteMessage(numericId, messageId);
+      },
+      throttleMs: 1000,
+      maxLength: 4096,
+      minInitialChars: 30,
+    });
   }
 }
 
