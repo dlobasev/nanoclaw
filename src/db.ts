@@ -118,9 +118,9 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
     );
-    // Backfill: existing rows with folder = 'main' are the main group
+    // Backfill: 'main' or channel-prefixed main folders like 'telegram_main'
     database.exec(
-      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
+      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main' OR folder LIKE '%\\_main' ESCAPE '\\'`,
     );
   } catch {
     /* column already exists */
