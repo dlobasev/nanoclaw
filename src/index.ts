@@ -76,6 +76,60 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+// --- Outbound message retry with exponential backoff ---
+const SEND_RETRY_ATTEMPTS = 3;
+const SEND_RETRY_BASE_DELAY_MS = 2000;
+
+async function sendWithRetry(
+  ch: Channel,
+  jid: string,
+  text: string,
+  replyToMessageId?: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < SEND_RETRY_ATTEMPTS; attempt++) {
+    try {
+      await ch.sendMessage(jid, text, replyToMessageId);
+      return;
+    } catch (err: unknown) {
+      const isLast = attempt === SEND_RETRY_ATTEMPTS - 1;
+      const code =
+        (err as any)?.error?.code || (err as any)?.code || '';
+      const httpCode = (err as any)?.error_code ?? 0;
+      const isTransient =
+        /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|EPIPE/i.test(
+          String(code),
+        ) || httpCode >= 500;
+
+      if (isLast || !isTransient) throw err;
+
+      const delay = SEND_RETRY_BASE_DELAY_MS * (attempt + 1);
+      logger.warn(
+        { jid, attempt: attempt + 1, code, delay },
+        'Transient send error, retrying',
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
+// --- Outbound dedup guard ---
+const DEDUP_WINDOW_MS = 10_000;
+const recentSends = new Map<string, number>();
+
+function isDuplicateSend(jid: string, text: string): boolean {
+  const key = `${jid}::${text}`;
+  const now = Date.now();
+
+  // Evict stale entries
+  for (const [k, ts] of recentSends) {
+    if (now - ts > DEDUP_WINDOW_MS) recentSends.delete(k);
+  }
+
+  if (recentSends.has(key)) return true;
+  recentSends.set(key, now);
+  return false;
+}
+
 const onecli = new OneCLI({ url: ONECLI_URL });
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
@@ -292,7 +346,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        try {
+          await sendWithRetry(channel, chatJid, text);
+        } catch (err) {
+          logger.error({ group: group.name, err }, 'Failed to send agent output after retries');
+        }
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -687,14 +745,17 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text && !isDuplicateSend(jid, text)) {
+        await sendWithRetry(channel, jid, text);
+      }
     },
   });
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      if (isDuplicateSend(jid, text)) return Promise.resolve();
+      return sendWithRetry(channel, jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
