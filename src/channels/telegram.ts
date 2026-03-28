@@ -2,6 +2,7 @@ import https from 'https';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { getMessageById } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -27,7 +28,10 @@ async function sendTelegramMessage(
   api: { sendMessage: Api['sendMessage'] },
   chatId: string | number,
   text: string,
-  options: { message_thread_id?: number } = {},
+  options: {
+    message_thread_id?: number;
+    reply_parameters?: { message_id: number };
+  } = {},
 ): Promise<void> {
   try {
     await api.sendMessage(chatId, text, {
@@ -39,6 +43,61 @@ async function sendTelegramMessage(
     logger.debug({ err }, 'Markdown send failed, falling back to plain text');
     await api.sendMessage(chatId, text, options);
   }
+}
+
+/**
+ * Truncate a string to a maximum length, appending "..." if truncated.
+ */
+function truncate(s: string, max = 120): string {
+  return s.length > max ? s.slice(0, max) + '...' : s;
+}
+
+/**
+ * Resolve a Telegram reply context: look up the replied-to message in the DB
+ * and return a prefix string with the quoted content.
+ * Falls back to the reply message text if DB lookup fails (common for bot messages
+ * whose DB id doesn't match Telegram message_id).
+ */
+function resolveReply(
+  replyMsg: {
+    message_id: number;
+    text?: string;
+    caption?: string;
+    from?: { first_name?: string };
+  },
+  chatJid: string,
+): string {
+  // Try DB lookup first
+  const original = getMessageById(replyMsg.message_id.toString(), chatJid);
+  if (original) {
+    return `[Replying to ${original.sender_name}: "${truncate(original.content, 200)}"]\n`;
+  }
+  // Fall back to the reply message text directly from Telegram
+  const text = replyMsg.text || replyMsg.caption;
+  if (text) {
+    const sender = replyMsg.from?.first_name || 'Unknown';
+    return `[Replying to ${sender}: "${truncate(text, 200)}"]\n`;
+  }
+  return '';
+}
+
+/**
+ * Resolve t.me/c/<chat_id>/<message_id> links in content.
+ * Replaces each link with `[Message: "<content>"]` if found in DB.
+ */
+function resolveMessageLinks(content: string): string {
+  return content.replace(
+    /https?:\/\/t\.me\/c\/(\d+)\/(\d+)/g,
+    (_match, rawChatId, msgId) => {
+      // Telegram supergroup JID: URL chat_id is bare id without -100 prefix
+      const candidateJids = [`tg:-100${rawChatId}`, `tg:${rawChatId}`];
+      for (const jid of candidateJids) {
+        const msg = getMessageById(msgId, jid);
+        if (msg) return `[Message: "${truncate(msg.content)}"]`;
+      }
+      return `[Message: not found]`;
+    },
+  );
 }
 
 export class TelegramChannel implements Channel {
@@ -148,6 +207,21 @@ export class TelegramChannel implements Channel {
         );
         return;
       }
+
+      // Resolve reply context — include quoted message content for the agent
+      const replyTo = ctx.message.reply_to_message;
+      if (replyTo) {
+        const prefix = resolveReply(replyTo, chatJid);
+        if (prefix) content = prefix + content;
+      }
+
+      // Handle Telegram's quote feature (selected text excerpt)
+      if (ctx.message.quote?.text) {
+        content = `[Quoted: "${truncate(ctx.message.quote.text, 300)}"]\n${content}`;
+      }
+
+      // Resolve t.me/c message links
+      content = resolveMessageLinks(content);
 
       // Deliver message — startMessageLoop() will pick it up
       this.opts.onMessage(chatJid, {
