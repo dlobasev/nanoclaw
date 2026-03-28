@@ -757,6 +757,15 @@ async function main(): Promise<void> {
       if (isDuplicateSend(jid, text)) return Promise.resolve();
       return sendWithRetry(channel, jid, text);
     },
+    sendReaction: async (jid, messageId, emoji) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) return;
+      if (messageId) {
+        await channel.sendReaction?.(jid, messageId, emoji);
+      } else {
+        await channel.reactToLatestMessage?.(jid, emoji);
+      }
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {
