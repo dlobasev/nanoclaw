@@ -604,7 +604,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Replying to Bob: "Are you coming tonight?"]\nYes, on my way!',
+          content:
+            '[Replying to Bob: "Are you coming tonight?"]\nYes, on my way!',
           reply_to_message_id: '42',
           reply_to_message_content: 'Are you coming tonight?',
           reply_to_sender_name: 'Bob',

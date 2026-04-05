@@ -827,6 +827,15 @@ async function main(): Promise<void> {
         );
       return channel.sendFile(jid, filePath, caption);
     },
+    sendVoice: (jid, audioBuffer, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendVoice)
+        throw new Error(
+          `Channel ${channel.name} does not support voice sending`,
+        );
+      return channel.sendVoice(jid, audioBuffer, caption);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

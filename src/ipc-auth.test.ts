@@ -55,6 +55,7 @@ beforeEach(() => {
     sendMessage: async () => {},
     sendFile: async () => {},
     sendReaction: async () => {},
+    sendVoice: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;

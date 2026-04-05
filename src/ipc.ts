@@ -18,6 +18,7 @@ export interface IpcDeps {
     messageId: string | undefined,
     emoji: string,
   ) => Promise<void>;
+  sendVoice: (jid: string, audioBuffer: Buffer, caption?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -197,6 +198,40 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC send_reaction attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'send_voice' &&
+                data.chatJid &&
+                data.text
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  const { synthesizeVoice } = await import('./tts.js');
+                  const audioBuffer = await synthesizeVoice(data.text as string);
+                  if (audioBuffer) {
+                    await deps.sendVoice(
+                      data.chatJid,
+                      audioBuffer,
+                      data.caption as string | undefined,
+                    );
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC voice sent',
+                    );
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid },
+                      'TTS synthesis failed, voice not sent',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC send_voice attempt blocked',
                   );
                 }
               }

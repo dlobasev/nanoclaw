@@ -929,6 +929,29 @@ export class TelegramChannel implements Channel {
     }
   }
 
+  async sendVoice(
+    jid: string,
+    audioBuffer: Buffer,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      await this.bot.api.sendVoice(
+        numericId,
+        new InputFile(audioBuffer, 'voice.ogg'),
+        caption ? { caption } : undefined,
+      );
+      logger.info({ jid, size: audioBuffer.length }, 'Telegram voice sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram voice');
+    }
+  }
+
   isConnected(): boolean {
     return this.bot !== null;
   }

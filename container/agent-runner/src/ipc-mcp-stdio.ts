@@ -68,24 +68,23 @@ server.tool(
 );
 
 server.tool(
-  'send_reaction',
-  'React to a message with an emoji. Use this naturally and sparingly — like a human would. Good for acknowledging messages, showing appreciation, or expressing emotion without sending a full reply. Do NOT react to every message.',
+  'send_voice',
+  'Reply with a voice message instead of text. Use when the user asks you to respond with a voice note. The text will be synthesized to speech and sent as a Telegram voice message.',
   {
-    message_id: z
+    text: z
       .string()
-      .describe('The message ID to react to (from the inbound message id field)'),
-    emoji: z
+      .describe('The text to speak. Keep it natural and conversational.'),
+    caption: z
       .string()
-      .describe(
-        'A single emoji to react with. Common: 👍 ❤️ 🔥 😂 🎉 👀 🤔 💯',
-      ),
+      .optional()
+      .describe('Optional text caption shown alongside the voice note'),
   },
   async (args) => {
     const data = {
-      type: 'send_reaction',
+      type: 'send_voice',
       chatJid,
-      messageId: args.message_id,
-      emoji: args.emoji,
+      text: args.text,
+      caption: args.caption || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };
@@ -94,7 +93,7 @@ server.tool(
 
     return {
       content: [
-        { type: 'text' as const, text: `Reacted with ${args.emoji}` },
+        { type: 'text' as const, text: 'Voice message sent.' },
       ],
     };
   },
@@ -102,7 +101,7 @@ server.tool(
 
 server.tool(
   'react_to_message',
-  'React to a message with an emoji. Use to acknowledge, approve, or express sentiment without sending a full text reply.',
+  'React to a message with an emoji. Use naturally and sparingly — like a human would. Good for acknowledging, showing appreciation, or expressing emotion without a full reply. Do NOT react to every message.',
   {
     messageId: z.string().optional().describe('Message ID to react to. If omitted, reacts to the most recent message.'),
     emoji: z.string().describe('The emoji to react with (e.g., "👍", "🔥", "✅", "❤️")'),
