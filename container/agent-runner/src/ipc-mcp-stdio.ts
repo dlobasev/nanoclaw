@@ -68,6 +68,100 @@ server.tool(
 );
 
 server.tool(
+  'send_reaction',
+  'React to a message with an emoji. Use this naturally and sparingly — like a human would. Good for acknowledging messages, showing appreciation, or expressing emotion without sending a full reply. Do NOT react to every message.',
+  {
+    message_id: z
+      .string()
+      .describe('The message ID to react to (from the inbound message id field)'),
+    emoji: z
+      .string()
+      .describe(
+        'A single emoji to react with. Common: 👍 ❤️ 🔥 😂 🎉 👀 🤔 💯',
+      ),
+  },
+  async (args) => {
+    const data = {
+      type: 'send_reaction',
+      chatJid,
+      messageId: args.message_id,
+      emoji: args.emoji,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        { type: 'text' as const, text: `Reacted with ${args.emoji}` },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'send_file',
+  'Send a file to the user or group. The file must exist in /workspace/group/. Use this to deliver generated documents, images, exports, etc.',
+  {
+    path: z
+      .string()
+      .describe(
+        'Absolute path to the file inside the container (must start with /workspace/group/)',
+      ),
+    caption: z
+      .string()
+      .optional()
+      .describe('Optional caption to display with the file'),
+  },
+  async (args) => {
+    if (!args.path.startsWith('/workspace/group/')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'File path must start with /workspace/group/',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (!fs.existsSync(args.path)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `File not found: ${args.path}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'send_file',
+      chatJid,
+      containerPath: args.path,
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `File ${path.basename(args.path)} sent.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
