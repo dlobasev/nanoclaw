@@ -65,6 +65,17 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    CREATE TABLE IF NOT EXISTS reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL,
+      message_chat_jid TEXT NOT NULL,
+      reactor_jid TEXT NOT NULL,
+      reactor_name TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      timestamp TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id, message_chat_jid);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -118,9 +129,9 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
     );
-    // Backfill: existing rows with folder = 'main' are the main group
+    // Backfill: 'main' or channel-prefixed main folders like 'telegram_main'
     database.exec(
-      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
+      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main' OR folder LIKE '%\\_main' ESCAPE '\\'`,
     );
   } catch {
     /* column already exists */
@@ -326,6 +337,88 @@ export function storeMessageDirect(msg: {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
   );
+}
+
+export function getMessageById(
+  messageId: string,
+  chatJid: string,
+): NewMessage | null {
+  const row = db
+    .prepare(
+      `SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+       FROM messages
+       WHERE id = ? AND chat_jid = ?`,
+    )
+    .get(messageId, chatJid) as
+    | {
+        id: string;
+        chat_jid: string;
+        sender: string;
+        sender_name: string;
+        content: string;
+        timestamp: string;
+        is_from_me: number;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    is_from_me: row.is_from_me === 1,
+  };
+}
+
+export function storeReaction(reaction: {
+  message_id: string;
+  message_chat_jid: string;
+  reactor_jid: string;
+  reactor_name: string;
+  emoji: string;
+  timestamp: string;
+}): void {
+  db.prepare(
+    `INSERT INTO reactions (message_id, message_chat_jid, reactor_jid, reactor_name, emoji, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    reaction.message_id,
+    reaction.message_chat_jid,
+    reaction.reactor_jid,
+    reaction.reactor_name,
+    reaction.emoji,
+    reaction.timestamp,
+  );
+}
+
+export function getReactionsForMessage(
+  messageId: string,
+  chatJid: string,
+): Array<{ reactor_name: string; emoji: string; timestamp: string }> {
+  return db
+    .prepare(
+      `SELECT reactor_name, emoji, timestamp FROM reactions
+       WHERE message_id = ? AND message_chat_jid = ?
+       ORDER BY timestamp`,
+    )
+    .all(messageId, chatJid) as Array<{
+    reactor_name: string;
+    emoji: string;
+    timestamp: string;
+  }>;
+}
+
+export function getLatestMessage(
+  chatJid: string,
+): { id: string; chat_jid: string } | null {
+  const row = db
+    .prepare(
+      `SELECT id, chat_jid FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid) as { id: string; chat_jid: string } | undefined;
+  return row || null;
 }
 
 export function getNewMessages(

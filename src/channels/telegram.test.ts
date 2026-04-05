@@ -78,7 +78,11 @@ vi.mock('grammy', () => ({
 }));
 
 import fs from 'fs';
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import {
+  TelegramChannel,
+  TelegramChannelOpts,
+  splitMessage,
+} from './telegram.js';
 
 // --- Test helpers ---
 
@@ -600,7 +604,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: 'Yes, on my way!',
+          content: '[Replying to Bob: "Are you coming tonight?"]\nYes, on my way!',
           reply_to_message_id: '42',
           reply_to_message_content: 'Are you coming tonight?',
           reply_to_sender_name: 'Bob',
@@ -1155,5 +1159,62 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', createTestOpts());
       expect(channel.name).toBe('telegram');
     });
+  });
+});
+
+describe('splitMessage', () => {
+  it('returns single chunk for short messages', () => {
+    expect(splitMessage('hello')).toEqual(['hello']);
+  });
+
+  it('returns single chunk at exactly 4096 chars', () => {
+    const text = 'x'.repeat(4096);
+    expect(splitMessage(text)).toEqual([text]);
+  });
+
+  it('splits at paragraph boundaries', () => {
+    const para1 = 'a'.repeat(3000);
+    const para2 = 'b'.repeat(3000);
+    const text = `${para1}\n\n${para2}`;
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]).toBe(para1 + '\n\n');
+    expect(chunks[1]).toBe(para2);
+  });
+
+  it('splits at newline when no paragraph break available', () => {
+    const line1 = 'a'.repeat(3000);
+    const line2 = 'b'.repeat(3000);
+    const text = `${line1}\n${line2}`;
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]).toBe(line1 + '\n');
+  });
+
+  it('does not split at a boundary in the first 30%', () => {
+    // Newline at position 100 — too early, should fall through
+    const text = 'a'.repeat(100) + '\n' + 'b'.repeat(4500);
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBe(2);
+    // Should NOT split at the newline (pos 100 < 4096 * 0.3 = 1228)
+    expect(chunks[0].length).toBe(4096); // hard cut
+  });
+
+  it('hard cuts when no natural break exists', () => {
+    const text = 'x'.repeat(5000);
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0].length).toBe(4096);
+    expect(chunks[1].length).toBe(904);
+  });
+
+  it('splits at code block boundaries', () => {
+    const code = '```\n' + 'x'.repeat(3000) + '\n```\n';
+    const after = 'y'.repeat(2000);
+    const text = code + after;
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]).toBe(code);
+    expect(chunks[1]).toBe(after);
   });
 });

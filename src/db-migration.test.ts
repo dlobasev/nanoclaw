@@ -64,4 +64,57 @@ describe('database migrations', () => {
       process.chdir(repoRoot);
     }
   });
+
+  it('backfills isMain for channel-prefixed main folders', async () => {
+    const repoRoot = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-test-'));
+
+    try {
+      process.chdir(tempDir);
+      fs.mkdirSync(path.join(tempDir, 'store'), { recursive: true });
+
+      const dbPath = path.join(tempDir, 'store', 'messages.db');
+      const legacyDb = new Database(dbPath);
+      // Create minimal schema that the migration will extend
+      legacyDb.exec(`
+        CREATE TABLE chats (
+          jid TEXT PRIMARY KEY,
+          name TEXT,
+          last_message_time TEXT
+        );
+        CREATE TABLE registered_groups (
+          jid TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          folder TEXT NOT NULL UNIQUE,
+          trigger_pattern TEXT NOT NULL,
+          added_at TEXT NOT NULL
+        );
+      `);
+      // Insert groups with different folder names
+      const insert = legacyDb.prepare(
+        `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at) VALUES (?, ?, ?, ?, ?)`,
+      );
+      insert.run('tg:111', 'Main', 'main', '@Andy', '2024-01-01T00:00:00Z');
+      insert.run('tg:222', 'TG Main', 'telegram_main', '@Andy', '2024-01-01T00:00:00Z');
+      insert.run('tg:333', 'Swarm', 'telegram_swarm', '@Andy', '2024-01-01T00:00:00Z');
+      insert.run('tg:444', 'Slack Main', 'slack_main', '@Andy', '2024-01-01T00:00:00Z');
+      legacyDb.close();
+
+      vi.resetModules();
+      const { initDatabase, getAllRegisteredGroups, _closeDatabase } =
+        await import('./db.js');
+
+      initDatabase();
+
+      const groups = getAllRegisteredGroups();
+      expect(groups['tg:111']?.isMain).toBe(true);
+      expect(groups['tg:222']?.isMain).toBe(true);
+      expect(groups['tg:333']?.isMain).toBeUndefined();
+      expect(groups['tg:444']?.isMain).toBe(true);
+
+      _closeDatabase();
+    } finally {
+      process.chdir(repoRoot);
+    }
+  });
 });

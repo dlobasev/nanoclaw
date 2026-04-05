@@ -87,9 +87,8 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, replyToMessageId?: string): Promise<void>;
   sendFile?(jid: string, filePath: string, caption?: string): Promise<void>;
-  sendReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
@@ -97,6 +96,12 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send an emoji reaction to a message.
+  sendReaction?(jid: string, messageId: string | undefined, emoji: string): Promise<void>;
+  // Optional: react to the most recent message in a chat.
+  reactToLatestMessage?(jid: string, emoji: string): Promise<void>;
+  // Optional: create a draft stream for progressive message display (edit-capable channels).
+  createDraftStream?(jid: string): import('./draft-stream.js').DraftStream;
 }
 
 // Callback type that channels use to deliver inbound messages

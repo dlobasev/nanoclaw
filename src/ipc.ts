@@ -15,7 +15,7 @@ export interface IpcDeps {
   sendFile: (jid: string, filePath: string, caption?: string) => Promise<void>;
   sendReaction: (
     jid: string,
-    messageId: string,
+    messageId: string | undefined,
     emoji: string,
   ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -80,7 +80,36 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
+              if (
+                data.type === 'react_to_message' &&
+                data.chatJid &&
+                data.emoji
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  await deps.sendReaction(
+                    data.chatJid,
+                    data.messageId || undefined,
+                    data.emoji,
+                  );
+                  logger.info(
+                    {
+                      chatJid: data.chatJid,
+                      emoji: data.emoji,
+                      sourceGroup,
+                    },
+                    'IPC reaction sent',
+                  );
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC reaction attempt blocked',
+                  );
+                }
+              } else if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
