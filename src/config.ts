@@ -10,6 +10,9 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
   'TZ',
+  'NANOCLAW_STORE_DIR',
+  'NANOCLAW_GROUPS_DIR',
+  'NANOCLAW_DATA_DIR',
 ]);
 
 export const ASSISTANT_NAME =
@@ -37,9 +40,15 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'sender-allowlist.json',
 );
-export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
-export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
-export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const STORE_DIR = path.resolve(
+  envConfig.NANOCLAW_STORE_DIR || process.env.NANOCLAW_STORE_DIR || path.join(PROJECT_ROOT, 'store'),
+);
+export const GROUPS_DIR = path.resolve(
+  envConfig.NANOCLAW_GROUPS_DIR || process.env.NANOCLAW_GROUPS_DIR || path.join(PROJECT_ROOT, 'groups'),
+);
+export const DATA_DIR = path.resolve(
+  envConfig.NANOCLAW_DATA_DIR || process.env.NANOCLAW_DATA_DIR || path.join(PROJECT_ROOT, 'data'),
+);
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
