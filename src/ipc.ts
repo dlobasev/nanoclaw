@@ -13,7 +13,11 @@ import { RegisteredGroup } from './types.js';
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   sendFile: (jid: string, filePath: string, caption?: string) => Promise<void>;
-  sendReaction: (jid: string, messageId: string, emoji: string) => Promise<void>;
+  sendReaction: (
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -107,11 +111,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   // Resolve container path to host path
                   const hostPath = (data.containerPath as string).replace(
                     '/workspace/group/',
-                    path.join(
-                      process.cwd(),
-                      'groups',
-                      sourceGroup,
-                    ) + '/',
+                    path.join(process.cwd(), 'groups', sourceGroup) + '/',
                   );
                   if (
                     fs.existsSync(hostPath) &&
@@ -130,7 +130,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     );
                   } else {
                     logger.warn(
-                      { containerPath: data.containerPath, hostPath, sourceGroup },
+                      {
+                        containerPath: data.containerPath,
+                        hostPath,
+                        sourceGroup,
+                      },
                       'IPC send_file: file not found or path outside group',
                     );
                   }

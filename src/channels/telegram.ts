@@ -91,7 +91,10 @@ export class TelegramChannel implements Channel {
       const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
       const resp = await fetch(fileUrl);
       if (!resp.ok) {
-        logger.warn({ fileId, status: resp.status }, 'Telegram file download failed');
+        logger.warn(
+          { fileId, status: resp.status },
+          'Telegram file download failed',
+        );
         return null;
       }
 
@@ -329,10 +332,7 @@ export class TelegramChannel implements Channel {
 
       // Resolve the actual host path for transcription
       const groupDir = resolveGroupFolderPath(group.folder);
-      const hostPath = filePath.replace(
-        '/workspace/group/',
-        `${groupDir}/`,
-      );
+      const hostPath = filePath.replace('/workspace/group/', `${groupDir}/`);
 
       const transcript = await transcribeAudio(hostPath);
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
@@ -449,11 +449,7 @@ export class TelegramChannel implements Channel {
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {
       this.bot!.start({
-        allowed_updates: [
-          'message',
-          'edited_message',
-          'message_reaction',
-        ],
+        allowed_updates: ['message', 'edited_message', 'message_reaction'],
         onStart: (botInfo) => {
           logger.info(
             { username: botInfo.username, id: botInfo.id },
@@ -547,12 +543,17 @@ export class TelegramChannel implements Channel {
 
     try {
       const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.setMessageReaction(numericId, parseInt(messageId, 10), [
-        { type: 'emoji', emoji: emoji as any },
-      ]);
+      await this.bot.api.setMessageReaction(
+        numericId,
+        parseInt(messageId, 10),
+        [{ type: 'emoji', emoji: emoji as any }],
+      );
       logger.info({ jid, messageId, emoji }, 'Telegram reaction sent');
     } catch (err) {
-      logger.error({ jid, messageId, emoji, err }, 'Failed to send Telegram reaction');
+      logger.error(
+        { jid, messageId, emoji, err },
+        'Failed to send Telegram reaction',
+      );
     }
   }
 
