@@ -491,12 +491,15 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        // adloop: disabled until OAuth token is configured
-        // adloop: {
-        //   command: 'python3',
-        //   args: ['-m', 'adloop'],
-        //   env: {},
-        // },
+        ...(fs.existsSync('/home/node/.adloop/token.json')
+          ? {
+              adloop: {
+                command: 'python3',
+                args: ['-m', 'adloop'],
+                env: {},
+              },
+            }
+          : {}),
       },
       hooks: {
         PreCompact: [
