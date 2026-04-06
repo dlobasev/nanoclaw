@@ -491,11 +491,12 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        adloop: {
-          command: 'python3',
-          args: ['-m', 'adloop'],
-          env: {},
-        },
+        // adloop: disabled until OAuth token is configured
+        // adloop: {
+        //   command: 'python3',
+        //   args: ['-m', 'adloop'],
+        //   env: {},
+        // },
       },
       hooks: {
         PreCompact: [
