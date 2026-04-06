@@ -278,6 +278,12 @@ async function buildContainerArgs(
     );
   }
 
+  // GitHub PAT for blog publishing (git push from container)
+  const githubToken = process.env.GITHUB_TOKEN;
+  if (githubToken) {
+    args.push('-e', `GITHUB_TOKEN=${githubToken}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
