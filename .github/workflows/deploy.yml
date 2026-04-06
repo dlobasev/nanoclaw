@@ -15,10 +15,12 @@ jobs:
           username: ubuntu
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
             cd ~/nanoclaw
             git pull origin main
             npm install
             npm run build
             ./container/build.sh
             rm -rf /var/lib/nanoclaw/data/sessions/*/agent-runner-src/
-            sudo systemctl restart nanoclaw
+            systemctl --user restart nanoclaw
