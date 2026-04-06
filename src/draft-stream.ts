@@ -105,7 +105,9 @@ export function createDraftStream(opts: DraftStreamOpts): DraftStream {
         throttleTimer = null;
       }
       await inFlight;
-      if (messageId) {
+      // Only delete if we sent a preview but never finalized it with real content.
+      // If lastSentText has content, the user already saw something — keep it.
+      if (messageId && !lastSentText) {
         try {
           await opts.deleteMessage(messageId);
         } catch {

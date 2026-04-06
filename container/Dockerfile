@@ -24,7 +24,12 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    python3-minimal \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python MCP servers (AdLoop: Google Ads + GA4 campaign management)
+RUN pip3 install --no-cache-dir --break-system-packages adloop
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium

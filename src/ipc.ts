@@ -18,7 +18,11 @@ export interface IpcDeps {
     messageId: string | undefined,
     emoji: string,
   ) => Promise<void>;
-  sendVoice: (jid: string, audioBuffer: Buffer, caption?: string) => Promise<void>;
+  sendVoice: (
+    jid: string,
+    audioBuffer: Buffer,
+    caption?: string,
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -211,7 +215,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   const { synthesizeVoice } = await import('./tts.js');
-                  const audioBuffer = await synthesizeVoice(data.text as string);
+                  const audioBuffer = await synthesizeVoice(
+                    data.text as string,
+                  );
                   if (audioBuffer) {
                     await deps.sendVoice(
                       data.chatJid,

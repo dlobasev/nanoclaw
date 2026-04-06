@@ -220,6 +220,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // AdLoop (Google Ads + GA4) config directory — writable for OAuth token refresh
+  const adloopDir = path.join(DATA_DIR, 'adloop');
+  if (fs.existsSync(adloopDir)) {
+    mounts.push({
+      hostPath: adloopDir,
+      containerPath: '/home/node/.adloop',
+      readonly: false,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(

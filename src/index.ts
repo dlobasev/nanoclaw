@@ -335,8 +335,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  // Progressive streaming: show live preview on edit-capable channels
-  const draftStream = channel.createDraftStream?.(chatJid);
+  // Progressive streaming: each result gets its own draft stream
+  let draftStream = channel.createDraftStream?.(chatJid);
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming preview — update draft with accumulated text
@@ -370,6 +370,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               );
             }
           }
+          // Create fresh draft stream for next result
+          draftStream = channel.createDraftStream?.(chatJid);
         } else {
           try {
             await sendWithRetry(channel, chatJid, text);

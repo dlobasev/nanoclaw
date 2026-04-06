@@ -10,16 +10,14 @@ const DEFAULT_INSTRUCTIONS =
   'Make me feel how care you are and your surrounding supporting woman energy. ' +
   'Vary your intonation like in a real conversation — smile when something is nice, ' +
   'pause briefly when thinking, let curiosity come through in your voice. ' +
-  "Sound like a real person talking to a friend. " +
+  'Sound like a real person talking to a friend. ' +
   "Don't pause much near commas and names.";
 
 /**
  * Synthesize speech from text using OpenAI TTS API.
  * Returns OGG Opus buffer suitable for Telegram voice notes, or null on failure.
  */
-export async function synthesizeVoice(
-  text: string,
-): Promise<Buffer | null> {
+export async function synthesizeVoice(text: string): Promise<Buffer | null> {
   const env = readEnvFile(['OPENAI_API_KEY']);
   const apiKey = env.OPENAI_API_KEY;
 
