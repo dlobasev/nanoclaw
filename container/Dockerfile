@@ -36,9 +36,8 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
 
-# Install Google Analytics and Google Ads MCP servers (Python-based)
-RUN pip3 install --break-system-packages analytics-mcp \
-    && pip3 install --break-system-packages git+https://github.com/googleads/google-ads-mcp.git
+# Install Google Analytics and Google Ads MCP server (AdLoop — read+write with safety guardrails)
+RUN pip3 install --break-system-packages adloop
 
 # Create app directory
 WORKDIR /app

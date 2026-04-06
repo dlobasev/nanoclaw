@@ -243,29 +243,26 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Google Analytics MCP: mount credentials file and pass env vars
-  if (process.env.GOOGLE_ANALYTICS_ENABLED === '1' || process.env.GOOGLE_ADS_ENABLED === '1') {
-    const googleCredsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    if (googleCredsPath && fs.existsSync(googleCredsPath)) {
-      args.push(
-        ...readonlyMountArgs(googleCredsPath, '/workspace/google-credentials.json'),
-      );
-      args.push('-e', 'GOOGLE_APPLICATION_CREDENTIALS=/workspace/google-credentials.json');
+  // AdLoop MCP: mount config directory and pass env vars for Google Ads + GA4
+  if (process.env.ADLOOP_ENABLED === '1') {
+    args.push('-e', 'ADLOOP_ENABLED=1');
+    // Mount adloop config directory (contains OAuth tokens after `adloop init`)
+    const adloopConfigDir = process.env.ADLOOP_CONFIG_DIR || path.join(process.env.HOME || '', '.adloop');
+    if (fs.existsSync(adloopConfigDir)) {
+      args.push('-v', `${adloopConfigDir}:/workspace/adloop`);
+      args.push('-e', 'ADLOOP_CONFIG_DIR=/workspace/adloop');
     }
-    if (process.env.GOOGLE_PROJECT_ID) {
-      args.push('-e', `GOOGLE_PROJECT_ID=${process.env.GOOGLE_PROJECT_ID}`);
-    }
-  }
-  if (process.env.GOOGLE_ANALYTICS_ENABLED === '1') {
-    args.push('-e', 'GOOGLE_ANALYTICS_ENABLED=1');
-  }
-  if (process.env.GOOGLE_ADS_ENABLED === '1') {
-    args.push('-e', 'GOOGLE_ADS_ENABLED=1');
     if (process.env.GOOGLE_ADS_DEVELOPER_TOKEN) {
       args.push('-e', `GOOGLE_ADS_DEVELOPER_TOKEN=${process.env.GOOGLE_ADS_DEVELOPER_TOKEN}`);
     }
     if (process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID) {
       args.push('-e', `GOOGLE_ADS_LOGIN_CUSTOMER_ID=${process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID}`);
+    }
+    if (process.env.GOOGLE_ADS_CUSTOMER_ID) {
+      args.push('-e', `GOOGLE_ADS_CUSTOMER_ID=${process.env.GOOGLE_ADS_CUSTOMER_ID}`);
+    }
+    if (process.env.GA4_PROPERTY_ID) {
+      args.push('-e', `GA4_PROPERTY_ID=${process.env.GA4_PROPERTY_ID}`);
     }
   }
 

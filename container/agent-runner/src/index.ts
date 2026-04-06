@@ -475,8 +475,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        ...(process.env.GOOGLE_ANALYTICS_ENABLED === '1' ? ['mcp__google_analytics__*'] : []),
-        ...(process.env.GOOGLE_ADS_ENABLED === '1' ? ['mcp__google_ads__*'] : []),
+        ...(process.env.ADLOOP_ENABLED === '1' ? ['mcp__adloop__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -492,32 +491,22 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        ...(process.env.GOOGLE_ANALYTICS_ENABLED === '1'
+        ...(process.env.ADLOOP_ENABLED === '1'
           ? {
-              google_analytics: {
-                command: 'analytics-mcp',
-                args: [],
+              adloop: {
+                command: 'adloop',
+                args: ['mcp'],
                 env: {
-                  GOOGLE_APPLICATION_CREDENTIALS:
-                    process.env.GOOGLE_APPLICATION_CREDENTIALS || '',
-                  GOOGLE_PROJECT_ID: process.env.GOOGLE_PROJECT_ID || '',
-                },
-              },
-            }
-          : {}),
-        ...(process.env.GOOGLE_ADS_ENABLED === '1'
-          ? {
-              google_ads: {
-                command: 'google-ads-mcp',
-                args: [],
-                env: {
-                  GOOGLE_APPLICATION_CREDENTIALS:
-                    process.env.GOOGLE_APPLICATION_CREDENTIALS || '',
-                  GOOGLE_PROJECT_ID: process.env.GOOGLE_PROJECT_ID || '',
+                  ADLOOP_CONFIG_DIR:
+                    process.env.ADLOOP_CONFIG_DIR || '/workspace/adloop',
                   GOOGLE_ADS_DEVELOPER_TOKEN:
                     process.env.GOOGLE_ADS_DEVELOPER_TOKEN || '',
                   GOOGLE_ADS_LOGIN_CUSTOMER_ID:
                     process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || '',
+                  GOOGLE_ADS_CUSTOMER_ID:
+                    process.env.GOOGLE_ADS_CUSTOMER_ID || '',
+                  GA4_PROPERTY_ID:
+                    process.env.GA4_PROPERTY_ID || '',
                 },
               },
             }
