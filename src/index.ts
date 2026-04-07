@@ -334,6 +334,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
+  let lastErrorMessage = '';
   let outputSentToUser = false;
 
   // Progressive streaming: each result gets its own draft stream
@@ -395,6 +396,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
     if (result.status === 'error') {
       hadError = true;
+      if (result.error) lastErrorMessage = result.error;
     }
   });
 
@@ -416,6 +418,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
       return true;
     }
+
+    // Notify user about the error
+    const errorText = lastErrorMessage || 'Claude API error';
+    try {
+      await sendWithRetry(channel, chatJid, `[${errorText} — retrying...]`);
+    } catch (sendErr) {
+      logger.warn({ group: group.name, sendErr }, 'Failed to send error notification');
+    }
+
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();

@@ -12,7 +12,7 @@ interface QueuedTask {
 }
 
 const MAX_RETRIES = 5;
-const BASE_RETRY_MS = 5000;
+const BASE_RETRY_MS = 10_000;
 
 interface GroupState {
   active: boolean;

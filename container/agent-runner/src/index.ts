@@ -412,6 +412,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let rateLimitCount = 0;
+  let anyTextProduced = false;
 
   // Streaming preview: accumulate assistant text and emit throttled
   let streamingTextAccum = '';
@@ -540,6 +542,11 @@ async function runQuery(
       log(`Session initialized: ${newSessionId}`);
     }
 
+    if (message.type === 'rate_limit_event') {
+      rateLimitCount++;
+      log(`Rate limit event #${rateLimitCount}`);
+    }
+
     if (
       message.type === 'system' &&
       (message as { subtype?: string }).subtype === 'task_notification'
@@ -561,17 +568,38 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId,
-      });
+      if (textResult) anyTextProduced = true;
+
+      if (message.subtype !== 'success') {
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error: textResult || `Agent error (${message.subtype})`,
+        });
+      } else {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId,
+        });
+      }
     }
+  }
+
+  // If no text was produced and rate limits occurred, report as error
+  if (!anyTextProduced && rateLimitCount > 0) {
+    writeOutput({
+      status: 'error',
+      result: null,
+      newSessionId,
+      error: 'Claude API rate limit',
+    });
   }
 
   ipcPolling = false;
   log(
-    `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
+    `Query done. Messages: ${messageCount}, results: ${resultCount}, rateLimits: ${rateLimitCount}, closedDuringQuery: ${closedDuringQuery}`,
   );
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
