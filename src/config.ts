@@ -109,3 +109,8 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// Propagate to process.env.TZ so that `new Date("2026-04-08T09:00:00")`
+// and other Node built-ins interpret wall-clock strings in the user's
+// timezone, not the process default (usually UTC on headless servers).
+process.env.TZ = TIMEZONE;
