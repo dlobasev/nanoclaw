@@ -6,7 +6,10 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import {
+  isValidGroupFolder,
+  resolveGroupFolderPath,
+} from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -142,16 +145,16 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  // Resolve container path to host path
+                  // Resolve container path to host path.
+                  // Honors NANOCLAW_GROUPS_DIR via resolveGroupFolderPath.
+                  const groupRoot = resolveGroupFolderPath(sourceGroup);
                   const hostPath = (data.containerPath as string).replace(
                     '/workspace/group/',
-                    path.join(process.cwd(), 'groups', sourceGroup) + '/',
+                    groupRoot + '/',
                   );
                   if (
                     fs.existsSync(hostPath) &&
-                    hostPath.startsWith(
-                      path.join(process.cwd(), 'groups', sourceGroup),
-                    )
+                    hostPath.startsWith(groupRoot)
                   ) {
                     await deps.sendFile(
                       data.chatJid,
