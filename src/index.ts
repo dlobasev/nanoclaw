@@ -424,7 +424,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     try {
       await sendWithRetry(channel, chatJid, `[${errorText} — retrying...]`);
     } catch (sendErr) {
-      logger.warn({ group: group.name, sendErr }, 'Failed to send error notification');
+      logger.warn(
+        { group: group.name, sendErr },
+        'Failed to send error notification',
+      );
     }
 
     // Roll back cursor so retries can re-process these messages
