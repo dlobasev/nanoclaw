@@ -6,10 +6,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import {
-  isValidGroupFolder,
-  resolveGroupFolderPath,
-} from './group-folder.js';
+import { isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -147,14 +144,18 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 ) {
                   // Resolve container path to host path.
                   // Honors NANOCLAW_GROUPS_DIR via resolveGroupFolderPath.
+                  // path.resolve normalizes .. segments so the prefix check
+                  // is not bypassable by path traversal.
                   const groupRoot = resolveGroupFolderPath(sourceGroup);
-                  const hostPath = (data.containerPath as string).replace(
+                  const rawPath = (data.containerPath as string).replace(
                     '/workspace/group/',
                     groupRoot + '/',
                   );
+                  const hostPath = path.resolve(rawPath);
                   if (
-                    fs.existsSync(hostPath) &&
-                    hostPath.startsWith(groupRoot)
+                    (hostPath === groupRoot ||
+                      hostPath.startsWith(groupRoot + path.sep)) &&
+                    fs.existsSync(hostPath)
                   ) {
                     await deps.sendFile(
                       data.chatJid,
