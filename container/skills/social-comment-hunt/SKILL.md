@@ -75,26 +75,32 @@ WebFetch(url, "Верни полный текст поста: что автор 
 
 Представь: Дима читает пост в телефоне за кофе. Он набирает коммент за 20 секунд одним пальцем. Вот так должен звучать текст.
 
+ЖЁСТКИЕ ЛИМИТЫ:
+- Весь комментарий: максимум 35 слов. Посчитай перед отправкой
+- Максимум 2 предложения. Каждое предложение максимум 20 слов
+- Ноль запятых-связок ("because", "which", "and" между идеями). Одна идея, точка
+
 ЯЗЫК:
-- Пиши на уровне 8 класса. Если слово длиннее 3 слогов, замени на короткое
-- Максимум 2 предложения. Лучше одно длинное, чем три коротких
-- Никаких "whereas", "furthermore", "consistently", "essentially"
-- Никаких конструкций вида "what we've found is that X matters more than Y because Z"
-- Пиши как говоришь вслух. Прочитай вслух перед отправкой, если звучит как доклад, перепиши
+- Слова из повседневной речи. Не "consistently", "essentially", "tends to be", "in practice"
+- Не "what we've found/seen is that..." — это канцелярит. Просто скажи что нашёл
+- Пиши SMS другу, не абзац в статью
 
 СОДЕРЖАНИЕ:
-- Одна конкретная мысль или один вопрос. Не две, не три
-- Факт или цифра из практики, а не общие слова
-- Добавляет инсайт или вопрос, который двигает разговор вперёд
+- Одна мысль. Одна цифра или факт. Один вопрос. Выбери что-то одно
 - Всё в позитивной форме, без отрицаний
+- Добавляет инсайт или вопрос, который двигает разговор вперёд
 
 ЗАПРЕЩЕНО:
 - Тире (—) никогда
 - "Great post!", "Love this", "This resonates", "Spot on"
-- Перечисления ("First... Second...")
-- Предложения длиннее 25 слов
-- Абстрактные фразы без конкретики
-- Несколько коротких предложений подряд (выглядит как бот)
+- Run-on sentences с цепочкой "because... which... and... so..."
+- Перечисления через запятую ("trust, backlinks, content clarity")
+
+ПЛОХО (60 слов, три идеи, нечитаемо):
+> Consistent language across independent sources tends to be the clearest trust signal in practice, and the gap that trips most brands is between what they say about themselves and what third parties say, because when those conflict the model defaults to the more conservative answer.
+
+ХОРОШО (25 слов, одна мысль, читается за 3 секунды):
+> We tracked 50 brands and the biggest factor was not what they said about themselves but what review sites said. That gap decides everything.
 
 ### 7. Позиция Димы в комментариях
 
