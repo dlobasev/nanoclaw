@@ -456,7 +456,10 @@ async function runQuery(
             preset: 'claude_code' as const,
             append: globalClaudeMd,
           }
-        : undefined,
+        : {
+            type: 'preset' as const,
+            preset: 'claude_code' as const,
+          },
       allowedTools: [
         'Bash',
         'Read',
