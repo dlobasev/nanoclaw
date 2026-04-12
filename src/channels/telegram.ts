@@ -26,17 +26,17 @@ export interface TelegramChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-/**
- * Send a message with Telegram Markdown parse mode, falling back to plain text.
- * Claude's output naturally matches Telegram's Markdown v1 format:
- *   *bold*, _italic_, `code`, ```code blocks```, [links](url)
- */
-/** Convert standard Markdown to Telegram Markdown v1 inline. */
-function toTelegramMarkdown(text: string): string {
-  // Bold: **text** → *text*
-  let t = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
-  // Headings: ## Title → *Title*
-  t = t.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+/** Convert Markdown to Telegram HTML. Avoids Markdown v1 underscore issues with URLs. */
+function toTelegramHtml(text: string): string {
+  // Bold: **text** or *text* → <b>text</b>
+  let t = text.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  t = t.replace(/\*(.+?)\*/g, '<b>$1</b>');
+  // Headings: ## Title → <b>Title</b>
+  t = t.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+  // Escape HTML entities in remaining text (but not our <b> tags)
+  // Only escape & < > that aren't part of our tags
+  t = t.replace(/&(?!amp;|lt;|gt;)/g, '&amp;');
+  t = t.replace(/<(?!b>|\/b>)/g, '&lt;');
   return t;
 }
 
@@ -49,16 +49,16 @@ async function sendTelegramMessage(
     reply_parameters?: { message_id: number };
   } = {},
 ): Promise<void> {
-  const formatted = toTelegramMarkdown(text);
+  const formatted = toTelegramHtml(text);
   try {
     await api.sendMessage(chatId, formatted, {
       ...options,
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
     });
   } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, formatted, options);
+    // Fallback: send as plain text if HTML parsing fails
+    logger.debug({ err }, 'HTML send failed, falling back to plain text');
+    await api.sendMessage(chatId, text, options);
   }
 }
 
@@ -1001,10 +1001,10 @@ export class TelegramChannel implements Channel {
     const numericId = jid.replace(/^tg:/, '');
     return createDraftStream({
       sendMessage: async (text) => {
-        const formatted = toTelegramMarkdown(text);
+        const formatted = toTelegramHtml(text);
         try {
           const msg = await this.bot!.api.sendMessage(numericId, formatted, {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
           });
           return msg.message_id;
         } catch {
@@ -1013,10 +1013,10 @@ export class TelegramChannel implements Channel {
         }
       },
       editMessage: async (messageId, text) => {
-        const formatted = toTelegramMarkdown(text);
+        const formatted = toTelegramHtml(text);
         try {
           await this.bot!.api.editMessageText(numericId, messageId, formatted, {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
           });
         } catch {
           await this.bot!.api.editMessageText(numericId, messageId, text);
