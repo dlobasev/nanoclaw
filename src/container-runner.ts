@@ -7,15 +7,14 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CONTAINER_ENV,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
-  GITHUB_TOKEN,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   ONECLI_URL,
-  SERPAPI_API_KEY,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -280,14 +279,9 @@ async function buildContainerArgs(
     );
   }
 
-  // GitHub PAT for blog publishing (git push from container)
-  if (GITHUB_TOKEN) {
-    args.push('-e', `GITHUB_TOKEN=${GITHUB_TOKEN}`);
-  }
-
-  // SerpAPI for Google Search (social monitoring, keyword research)
-  if (SERPAPI_API_KEY) {
-    args.push('-e', `SERPAPI_API_KEY=${SERPAPI_API_KEY}`);
+  // Forward configured env vars to container (defined in config.ts CONTAINER_ENV)
+  for (const [key, value] of Object.entries(CONTAINER_ENV)) {
+    if (value) args.push('-e', `${key}=${value}`);
   }
 
   // Runtime-specific args for host gateway resolution

@@ -326,6 +326,8 @@ function transformSegment(text: string, channel: ChannelType): string {
   // 4. Links
   if (channel === 'slack') {
     t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
+  } else if (channel === 'telegram') {
+    // Telegram Markdown v1 renders [text](url) natively — preserve as-is
   } else {
     t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
   }

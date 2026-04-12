@@ -701,8 +701,19 @@ async function main(): Promise<void> {
     /* ignore */
   }
 
+  // Detect channel from chatJid prefix
+  const channel = containerInput.chatJid.startsWith('tg:')
+    ? 'Telegram'
+    : containerInput.chatJid.startsWith('slack:')
+      ? 'Slack'
+      : containerInput.chatJid.startsWith('discord:')
+        ? 'Discord'
+        : containerInput.chatJid.includes('@')
+          ? 'WhatsApp'
+          : 'unknown';
+
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
+  let prompt = `[Channel: ${channel}]\n\n${containerInput.prompt}`;
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
   }
