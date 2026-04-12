@@ -284,6 +284,12 @@ async function buildContainerArgs(
     args.push('-e', `GITHUB_TOKEN=${githubToken}`);
   }
 
+  // SerpAPI for Google Search (social monitoring, keyword research)
+  const serpApiKey = process.env.SERPAPI_API_KEY;
+  if (serpApiKey) {
+    args.push('-e', `SERPAPI_API_KEY=${serpApiKey}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
