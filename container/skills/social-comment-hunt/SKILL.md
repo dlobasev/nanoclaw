@@ -11,13 +11,15 @@
 ### 1. Дедупликация
 Читаем `/workspace/group/projects/reachd/geo_posts_log.txt`. Посты из этого файла пропускаем.
 
-### 2. Поиск через SerpAPI (Google Search)
+### 2. Поиск постов
 
-Для поиска использовать SerpAPI — это настоящий Google через API. Ключ уже в `$SERPAPI_API_KEY`.
+Цель: ~3 поста с каждого источника (LinkedIn, X, Reddit). Ищем посты где люди пишут про AI visibility, рекомендации бизнесов в чатботах, видимость в AI-поиске — всё, что релевантно сфере Reachd.ai.
 
-Ищем посты где люди пишут про AI visibility, рекомендации бизнесов в чатботах, видимость в AI-поиске — всё, что релевантно сфере Reachd.ai. Сформируй поисковые запросы сама: 5-7 штук, по разным платформам (linkedin.com/posts, x.com, reddit.com), варьируй формулировки между запусками.
+ВАЖНО: только настоящие посты. Статьи блогов, пресс-релизы, новостные сайты — пропускать.
 
-Для каждого запроса выполнить:
+#### LinkedIn и Reddit — через SerpAPI (Google Search)
+
+Ключ в `$SERPAPI_API_KEY`. Сформируй 3-4 запроса для LinkedIn (`site:linkedin.com/posts`) и 2-3 для Reddit (`site:reddit.com`). Варьируй формулировки между запусками.
 
 ```bash
 python3 -c "
@@ -34,22 +36,50 @@ for r in results.get('organic_results', []):
 "
 ```
 
-`tbs: qdr:d` — встроенный фильтр Google "за последний день".
+`tbs: qdr:d` — фильтр Google "за последний день".
 
-ВАЖНО: искать только настоящие посты на LinkedIn, X (Twitter) и Reddit. Статьи блогов, пресс-релизы, новостные сайты — не включать. Нужно только то, где Дима может оставить комментарий.
+#### X (Twitter) — через xAI X Search API
 
-Если `SERPAPI_API_KEY` не установлен, использовать `WebSearch` как fallback.
+SerpAPI плохо ищет по X. Используй xAI Responses API с инструментом `x_search`. Ключ в `$XAI_API_KEY`.
+
+Вычисли вчерашнюю дату для `from_date`:
+
+```bash
+YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+
+curl -s https://api.x.ai/v1/responses \
+  -H "Authorization: Bearer $XAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"grok-4-1-fast-reasoning\",
+    \"input\": [{\"role\": \"user\", \"content\": \"Find 3 posts from the last 24 hours on X about GEO optimization, AI visibility for businesses, or how brands appear in ChatGPT/Perplexity/AI search. For each post return: author handle, full post text, and direct URL. Only real posts with engagement, skip news bots and spam.\"}],
+    \"tools\": [{\"type\": \"x_search\", \"from_date\": \"$YESTERDAY\", \"to_date\": \"$TODAY\"}]
+  }"
+```
+
+Ответ содержит полный текст постов, хэндлы авторов и прямые URL — дополнительно читать через curl/WebFetch не нужно. Текст поста в поле `output[last].content[0].text`.
 
 ### 3. Прочитать каждый пост целиком
 
 ОБЯЗАТЕЛЬНО: перед тем как писать комментарий, прочитай полный текст поста через WebFetch. Сниппета из поиска НЕ ДОСТАТОЧНО. Без полного текста комментарий будет мимо.
 
-Для каждого кандидата:
-```
-WebFetch(url, "Верни полный текст поста: что автор утверждает, какие аргументы приводит, какие вопросы задаёт")
+Для каждого кандидата скачай полный текст через curl (WebFetch блокируется некоторыми сайтами):
+
+```bash
+curl -sL -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" -H "Accept: text/html,application/xhtml+xml" -H "Accept-Language: en-US,en;q=0.9" "URL" | python3 -c "
+import sys, re
+html = sys.stdin.read()
+# Strip tags
+text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+text = re.sub(r'<[^>]+>', ' ', text)
+text = re.sub(r'\s+', ' ', text).strip()
+print(text[:4000])
+"
 ```
 
-Если WebFetch не может прочитать страницу (paywall, login required), пропусти этот пост.
+Если curl тоже не сработал (пустой ответ, login required), пропусти пост.
 
 ### 4. Отбор
 Лучшие 3-5 постов (уже прочитанных!) где Димин угол добавляет реальную ценность. Приоритет:
@@ -80,27 +110,39 @@ WebFetch(url, "Верни полный текст поста: что автор 
 - Максимум 2 предложения. Каждое предложение максимум 20 слов
 - Ноль запятых-связок ("because", "which", "and" между идеями). Одна идея, точка
 
-ЯЗЫК:
-- Слова из повседневной речи. Не "consistently", "essentially", "tends to be", "in practice"
-- Не "what we've found/seen is that..." — это канцелярит. Просто скажи что нашёл
+ГОЛОС:
+- Всегда от первого лица: "I", "I've seen", "I tracked". Никогда "we", "we've found", "what we see"
+- Никогда "you", "your". Это звучит как совет незнакомцу. Говори про свой опыт, про бренды, про индустрию
 - Пиши SMS другу, не абзац в статью
 
+ЯЗЫК:
+- Слова из повседневной речи. Запрещено: "consistently", "essentially", "tends to be", "in practice"
+- Запрещены конструкции: "what I've found/seen is that..." — канцелярит. Просто скажи что нашёл
+
 СОДЕРЖАНИЕ:
-- Одна мысль. Одна цифра или факт. Один вопрос. Выбери что-то одно
-- Всё ТОЛЬКО в позитивной форме. Ноль отрицаний: not, don't, isn't, never, no one, без "не". Всегда переформулируй: вместо "they don't check" → "they skip", вместо "not X but Y" → "Y matters more"
-- Добавляет инсайт или вопрос, который двигает разговор вперёд
+- Одна мысль. Одна цифра или факт. Выбери что-то одно
+- Всё ТОЛЬКО в позитивной форме. Запрещены противопоставления: "not X but Y", "not only X but also Z", "less about X more about Y". Вместо этого просто скажи Y. Позитивная формулировка = говори что есть, а не чего нет
+- Заканчивай размышлением вслух, как будто ещё думаешь над этим. НЕ вопросом читателю (банальные вопросы типа "Are you seeing this?" — маркер AI). Размышление = мысль, которую ты сам ещё обдумываешь
+
+НАЧАЛО КОММЕНТАРИЯ:
+- НИКОГДА не начинай с пересказа поста ("The 38% stat is...", "The two-layer model..."). Это маркер AI-контента. Живой человек сразу пишет свою мысль, а не повторяет чужую
+- Начинай со своего наблюдения, факта, опыта
 
 ЗАПРЕЩЕНО:
 - Тире (—) никогда
+- "you", "your" никогда
+- "we", "we've" никогда. Только "I"
 - "Great post!", "Love this", "This resonates", "Spot on"
 - Run-on sentences с цепочкой "because... which... and... so..."
 - Перечисления через запятую ("trust, backlinks, content clarity")
+- Банальные вопросы в конце ("Are you seeing this?", "How are you tracking?", "Curious how...")
 
 ТЕСТ ПЕРЕД ОТПРАВКОЙ:
 1. Посчитай слова. Больше 35? Перепиши
-2. Есть отрицания (not, don't, isn't, never, без "не")? Переформулируй в позитив
-3. Есть ли вопрос читателю? Хороший коммент заканчивается вопросом, который вовлекает
-4. Звучит как утверждение-истина ("X decides everything", "Y is the key")? Это AI-стиль. Перепиши как наблюдение из опыта
+2. Есть "you/your/we/we've"? Перепиши
+3. Есть противопоставления ("not X but Y", "less X more Y")? Скажи только Y
+4. Начинается с пересказа поста? Перепиши, начни со своей мысли
+5. Заканчивается банальным вопросом? Замени на размышление вслух
 
 ### 7. Позиция Димы в комментариях
 

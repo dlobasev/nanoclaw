@@ -14,6 +14,7 @@ const envConfig = readEnvFile([
   'NANOCLAW_GROUPS_DIR',
   'NANOCLAW_DATA_DIR',
   'SERPAPI_API_KEY',
+  'XAI_API_KEY',
   'GITHUB_TOKEN',
 ]);
 
@@ -75,6 +76,7 @@ export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
 export const CONTAINER_ENV: Record<string, string | undefined> = {
   GITHUB_TOKEN: process.env.GITHUB_TOKEN || envConfig.GITHUB_TOKEN,
   SERPAPI_API_KEY: process.env.SERPAPI_API_KEY || envConfig.SERPAPI_API_KEY,
+  XAI_API_KEY: process.env.XAI_API_KEY || envConfig.XAI_API_KEY,
 };
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
