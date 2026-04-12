@@ -586,22 +586,14 @@ describe('parseSignalStyles — snake_case guard', () => {
   });
 });
 
-describe('formatOutbound — channel-aware', () => {
-  it('applies parseTextStyles when channel is provided', () => {
-    expect(formatOutbound('**bold**', 'whatsapp')).toBe('*bold*');
+describe('formatOutbound', () => {
+  it('strips internal tags', () => {
+    expect(formatOutbound('<internal>thinking</internal>**done**')).toBe(
+      '**done**',
+    );
   });
 
-  it('returns plain stripped text when no channel provided', () => {
+  it('preserves markdown — channels handle their own formatting', () => {
     expect(formatOutbound('**bold**')).toBe('**bold**');
-  });
-
-  it('strips internal tags then applies channel formatting', () => {
-    expect(
-      formatOutbound('<internal>thinking</internal>**done**', 'telegram'),
-    ).toBe('*done*');
-  });
-
-  it('signal channel is passthrough — raw markdown preserved for parseSignalStyles', () => {
-    expect(formatOutbound('**bold**', 'signal')).toBe('**bold**');
   });
 });

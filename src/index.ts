@@ -50,7 +50,6 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
-import { ChannelType } from './text-styles.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -816,7 +815,7 @@ async function main(): Promise<void> {
         logger.warn({ jid }, 'No channel owns JID, cannot send message');
         return;
       }
-      const text = formatOutbound(rawText, channel.name as ChannelType);
+      const text = formatOutbound(rawText);
       if (text && !isDuplicateSend(jid, text)) {
         await sendWithRetry(channel, jid, text);
       }
@@ -826,7 +825,7 @@ async function main(): Promise<void> {
     sendMessage: (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      const text = formatOutbound(rawText, channel.name as ChannelType);
+      const text = formatOutbound(rawText);
       if (!text || isDuplicateSend(jid, text)) return Promise.resolve();
       return sendWithRetry(channel, jid, text);
     },
