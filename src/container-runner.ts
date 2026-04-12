@@ -11,9 +11,11 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
+  GITHUB_TOKEN,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   ONECLI_URL,
+  SERPAPI_API_KEY,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -279,15 +281,13 @@ async function buildContainerArgs(
   }
 
   // GitHub PAT for blog publishing (git push from container)
-  const githubToken = process.env.GITHUB_TOKEN;
-  if (githubToken) {
-    args.push('-e', `GITHUB_TOKEN=${githubToken}`);
+  if (GITHUB_TOKEN) {
+    args.push('-e', `GITHUB_TOKEN=${GITHUB_TOKEN}`);
   }
 
   // SerpAPI for Google Search (social monitoring, keyword research)
-  const serpApiKey = process.env.SERPAPI_API_KEY;
-  if (serpApiKey) {
-    args.push('-e', `SERPAPI_API_KEY=${serpApiKey}`);
+  if (SERPAPI_API_KEY) {
+    args.push('-e', `SERPAPI_API_KEY=${SERPAPI_API_KEY}`);
   }
 
   // Runtime-specific args for host gateway resolution

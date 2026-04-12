@@ -13,6 +13,8 @@ const envConfig = readEnvFile([
   'NANOCLAW_STORE_DIR',
   'NANOCLAW_GROUPS_DIR',
   'NANOCLAW_DATA_DIR',
+  'SERPAPI_API_KEY',
+  'GITHUB_TOKEN',
 ]);
 
 export const ASSISTANT_NAME =
@@ -67,6 +69,10 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   10,
 ); // 10MB default
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
+export const SERPAPI_API_KEY =
+  process.env.SERPAPI_API_KEY || envConfig.SERPAPI_API_KEY;
+export const GITHUB_TOKEN =
+  process.env.GITHUB_TOKEN || envConfig.GITHUB_TOKEN;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
