@@ -87,7 +87,7 @@ WebFetch(url, "Верни полный текст поста: что автор 
 
 СОДЕРЖАНИЕ:
 - Одна мысль. Одна цифра или факт. Один вопрос. Выбери что-то одно
-- Всё в позитивной форме, без отрицаний
+- Всё ТОЛЬКО в позитивной форме. Ноль отрицаний: not, don't, isn't, never, no one, без "не". Всегда переформулируй: вместо "they don't check" → "they skip", вместо "not X but Y" → "Y matters more"
 - Добавляет инсайт или вопрос, который двигает разговор вперёд
 
 ЗАПРЕЩЕНО:
@@ -96,11 +96,11 @@ WebFetch(url, "Верни полный текст поста: что автор 
 - Run-on sentences с цепочкой "because... which... and... so..."
 - Перечисления через запятую ("trust, backlinks, content clarity")
 
-ПЛОХО (60 слов, три идеи, нечитаемо):
-> Consistent language across independent sources tends to be the clearest trust signal in practice, and the gap that trips most brands is between what they say about themselves and what third parties say, because when those conflict the model defaults to the more conservative answer.
-
-ХОРОШО (25 слов, одна мысль, читается за 3 секунды):
-> We tracked 50 brands and the biggest factor was not what they said about themselves but what review sites said. That gap decides everything.
+ТЕСТ ПЕРЕД ОТПРАВКОЙ:
+1. Посчитай слова. Больше 35? Перепиши
+2. Есть отрицания (not, don't, isn't, never, без "не")? Переформулируй в позитив
+3. Есть ли вопрос читателю? Хороший коммент заканчивается вопросом, который вовлекает
+4. Звучит как утверждение-истина ("X decides everything", "Y is the key")? Это AI-стиль. Перепиши как наблюдение из опыта
 
 ### 7. Позиция Димы в комментариях
 
