@@ -1001,11 +1001,26 @@ export class TelegramChannel implements Channel {
     const numericId = jid.replace(/^tg:/, '');
     return createDraftStream({
       sendMessage: async (text) => {
-        const msg = await this.bot!.api.sendMessage(numericId, text);
-        return msg.message_id;
+        const formatted = toTelegramMarkdown(text);
+        try {
+          const msg = await this.bot!.api.sendMessage(numericId, formatted, {
+            parse_mode: 'Markdown',
+          });
+          return msg.message_id;
+        } catch {
+          const msg = await this.bot!.api.sendMessage(numericId, text);
+          return msg.message_id;
+        }
       },
       editMessage: async (messageId, text) => {
-        await this.bot!.api.editMessageText(numericId, messageId, text);
+        const formatted = toTelegramMarkdown(text);
+        try {
+          await this.bot!.api.editMessageText(numericId, messageId, formatted, {
+            parse_mode: 'Markdown',
+          });
+        } catch {
+          await this.bot!.api.editMessageText(numericId, messageId, text);
+        }
       },
       deleteMessage: async (messageId) => {
         await this.bot!.api.deleteMessage(numericId, messageId);
