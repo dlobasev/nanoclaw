@@ -21,6 +21,11 @@
 - ЗАПРЕЩЕНО начинать с пересказа поста ("That 10-40% spread...", "The stat is..."). Это маркер AI
 - Начинай сразу со своего наблюдения или факта
 
+ЦЕННОСТЬ:
+- Каждый комментарий должен содержать конкретный инсайт из своего опыта
+- Тест: прочитай комментарий и спроси "и что?". Если ответа нет — ПЕРЕПИШИ
+- Запрещено: просто соглашаться ("I see this too"), просто переформулировать пост, просто делиться ощущениями без вывода
+
 КОНЕЦ:
 - ЗАПРЕЩЕНО заканчивать банальным вопросом ("Are you seeing this?", "How are you tracking?")
 - Заканчивай размышлением вслух — мысль, которую сам ещё обдумываешь
@@ -43,86 +48,30 @@
 
 ## Процесс
 
-### 1. Дедупликация
-Читаем `/workspace/group/projects/reachd/geo_posts_log.txt`. Посты из этого файла пропускаем.
+### 1. Поиск постов
 
-### 2. Поиск постов
-
-Выполни поиск в ТРЁХ источниках обязательно:
-1. **LinkedIn** — через SerpAPI (3-4 запроса с `site:linkedin.com/posts`)
-2. **Reddit** — через SerpAPI (2-3 запроса с `site:reddit.com`)
-3. **X (Twitter)** — через xAI X Search API
-
-Из каждого источника выбери 3 самых интересных поста с наибольшим охватом (лайки, комментарии, реакции). Итого до 9 постов. Посты без реакций пропускай.
-
-ВАЖНО: только настоящие посты. Статьи блогов, пресс-релизы, новостные сайты — пропускать.
-
-Темы: AI visibility, рекомендации бизнесов в чатботах, видимость в AI-поиске, GEO — всё, что релевантно.
-
-#### LinkedIn и Reddit — SerpAPI
-
-Ключ в `$SERPAPI_API_KEY`. Варьируй формулировки между запусками.
+Запусти скрипт поиска:
 
 ```bash
-python3 -c "
-from serpapi import GoogleSearch
-import json, os
-results = GoogleSearch({
-    'q': '<QUERY>',
-    'api_key': os.environ['SERPAPI_API_KEY'],
-    'num': 10,
-    'tbs': 'qdr:d'
-}).get_dict()
-for r in results.get('organic_results', []):
-    print(json.dumps({'title': r.get('title',''), 'link': r.get('link',''), 'snippet': r.get('snippet',''), 'date': r.get('date','')}))
-"
+python3 /home/node/.claude/skills/social-comment-hunt/search.py
 ```
 
-#### X (Twitter) — xAI X Search API
+Скрипт автоматически:
+- Ищет по LinkedIn, Reddit (SerpAPI) и X (xAI x_search)
+- Фильтрует по дате (только последние 48 часов)
+- Дедуплицирует по логу `/workspace/group/projects/reachd/geo_posts_log.txt`
+- Загружает полный текст постов
+- Возвращает до 3 постов с каждого источника
 
-Ключ в `$XAI_API_KEY`.
+Результат — JSON массив в stdout. Диагностика — в stderr.
 
-```bash
-YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
-TODAY=$(date +%Y-%m-%d)
-
-curl -s https://api.x.ai/v1/responses \
-  -H "Authorization: Bearer $XAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"model\": \"grok-4-1-fast-reasoning\",
-    \"input\": [{\"role\": \"user\", \"content\": \"Find 3 posts from the last 24 hours on X about GEO optimization, AI visibility for businesses, or how brands appear in ChatGPT/Perplexity/AI search. For each post return: author handle, full post text, and direct URL. Only real posts with engagement, skip news bots and spam.\"}],
-    \"tools\": [{\"type\": \"x_search\", \"from_date\": \"$YESTERDAY\", \"to_date\": \"$TODAY\"}]
-  }"
-```
-
-Ответ содержит полный текст постов в `output[last].content[0].text`.
-
-### 3. Прочитать каждый пост целиком
-
-Для LinkedIn и Reddit — обязательно прочитай полный текст через curl (WebFetch блокируется некоторыми сайтами). Для X — текст уже есть из xAI.
-
-```bash
-curl -sL -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" -H "Accept: text/html,application/xhtml+xml" -H "Accept-Language: en-US,en;q=0.9" "URL" | python3 -c "
-import sys, re
-html = sys.stdin.read()
-text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
-text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
-text = re.sub(r'<[^>]+>', ' ', text)
-text = re.sub(r'\s+', ' ', text).strip()
-print(text[:4000])
-"
-```
-
-Если curl не сработал — пропусти пост.
-
-### 4. Отбор
-До 9 постов (по 3 с каждого источника) где Димин угол добавляет ценность:
+### 2. Отбор
+Из результатов скрипта выбери посты где Димин угол добавляет ценность:
 - Автор с аудиторией
 - Пост делает конкретное утверждение
 - Есть что добавить по существу
 
-### 5. Написать комментарии
+### 3. Написать комментарии
 
 Для каждого поста напиши комментарий строго по ПРАВИЛАМ выше. После написания пройди чеклист:
 1. Посчитай слова. Больше 35? ПЕРЕПИШИ
@@ -130,8 +79,9 @@ print(text[:4000])
 3. Начинается с пересказа поста? ПЕРЕПИШИ
 4. Есть противопоставления ("not X but Y")? ПЕРЕПИШИ
 5. Заканчивается банальным вопросом? ПЕРЕПИШИ
+6. Спроси "и что?" — есть конкретный инсайт? Нет — ПЕРЕПИШИ
 
-### 6. Формат вывода
+### 4. Формат вывода
 
 ```
 [Автор] — [Платформа] — [тема 5 слов]
@@ -140,8 +90,5 @@ print(text[:4000])
 > [готовый комментарий на английском]
 ```
 
-### 7. Обновление лога
-Добавляем URL всех найденных постов в `/workspace/group/projects/reachd/geo_posts_log.txt` (по одному на строку).
-
-### 8. Отправка
+### 5. Отправка
 Если посты найдены — отправляем дайджест. Если нет — "Свежих постов по GEO/AI visibility не нашла."
