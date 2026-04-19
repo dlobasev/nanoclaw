@@ -9,6 +9,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
+  'ONECLI_API_KEY',
   'TZ',
   'NANOCLAW_STORE_DIR',
   'NANOCLAW_GROUPS_DIR',
@@ -70,6 +71,8 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   10,
 ); // 10MB default
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
+export const ONECLI_API_KEY =
+  process.env.ONECLI_API_KEY || envConfig.ONECLI_API_KEY;
 // Environment variables forwarded into agent containers.
 // To add a new key: 1) add to readEnvFile array above, 2) add here.
 // container-runner.ts iterates this object automatically.
