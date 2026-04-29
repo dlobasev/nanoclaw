@@ -46,6 +46,17 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import {
+  CONTEXT_OVERFLOW_USER_MESSAGE,
+  RESET_DONE_MESSAGE,
+  RESET_REMINDER_MESSAGE,
+  clearGroupBlocked,
+  isContextOverflowError,
+  isGroupBlocked,
+  isResetCommand,
+  markGroupBlocked,
+  resetGroupSession,
+} from './context-overflow.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -292,6 +303,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Context-overflow recovery: while group is blocked, intercept /reset and
+  // skip the agent entirely so we don't loop on the same doomed prompt.
+  if (isGroupBlocked(group.folder)) {
+    const resetMsg = missedMessages.find(
+      (m) => isResetCommand(m.content) && (isMainGroup || m.is_from_me),
+    );
+    const newCursor = missedMessages[missedMessages.length - 1].timestamp;
+
+    if (resetMsg) {
+      resetGroupSession(group.folder);
+      delete sessions[group.folder];
+      clearGroupBlocked(group.folder);
+      lastAgentTimestamp[chatJid] = newCursor;
+      saveState();
+      try {
+        await sendWithRetry(channel, chatJid, RESET_DONE_MESSAGE);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, err },
+          'Failed to send reset confirmation',
+        );
+      }
+      return true;
+    }
+
+    lastAgentTimestamp[chatJid] = newCursor;
+    saveState();
+    try {
+      await sendWithRetry(channel, chatJid, RESET_REMINDER_MESSAGE);
+    } catch (err) {
+      logger.warn({ group: group.name, err }, 'Failed to send reset reminder');
+    }
+    return true;
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
@@ -419,6 +465,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return true;
     }
 
+    // Context-overflow: send a clear, actionable message and stop retrying.
+    // Cursor stays advanced so the same fatal prompt isn't replayed.
+    if (
+      isGroupBlocked(group.folder) ||
+      isContextOverflowError(lastErrorMessage)
+    ) {
+      markGroupBlocked(group.folder, 'context-overflow');
+      logger.warn(
+        { group: group.name, error: lastErrorMessage },
+        'Context overflow — group blocked until /reset',
+      );
+      try {
+        await sendWithRetry(channel, chatJid, CONTEXT_OVERFLOW_USER_MESSAGE);
+      } catch (sendErr) {
+        logger.warn(
+          { group: group.name, sendErr },
+          'Failed to send context-overflow notification',
+        );
+      }
+      return true;
+    }
+
     // Notify user about the error
     const errorText = lastErrorMessage || 'Claude API error';
     try {
@@ -529,6 +597,9 @@ async function runAgent(
         );
         delete sessions[group.folder];
         deleteSession(group.folder);
+      } else if (isContextOverflowError(output.error)) {
+        // Caller sees the blocked flag and short-circuits the retry path.
+        markGroupBlocked(group.folder, 'context-overflow');
       }
 
       logger.error(
