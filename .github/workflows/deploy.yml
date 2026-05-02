@@ -23,9 +23,8 @@ jobs:
             npm run build
             ./container/build.sh
             rm -rf /var/lib/nanoclaw/data/sessions/*/agent-runner-src/
-            # Copy personality files to runtime groups (no-clobber: don't overwrite agent edits)
+            # Copy persona file to runtime groups (no-clobber: don't overwrite agent edits)
             for dir in /var/lib/nanoclaw/groups/*/; do
               cp -n ~/nanoclaw/personality/SOUL.md "$dir" 2>/dev/null || true
-              cp -n ~/nanoclaw/personality/IDENTITY.md "$dir" 2>/dev/null || true
             done
             systemctl --user restart nanoclaw

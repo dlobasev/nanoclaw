@@ -40,10 +40,7 @@ export function isResetCommand(text: string): boolean {
 
 export function resetGroupSession(folder: string): void {
   deleteSession(folder);
-  logger.info(
-    { folder },
-    'Group session reset (context-overflow recovery)',
-  );
+  logger.info({ folder }, 'Group session reset (context-overflow recovery)');
 }
 
 export const CONTEXT_OVERFLOW_USER_MESSAGE =

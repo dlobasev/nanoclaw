@@ -427,6 +427,22 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Load SOUL.md directly into the system prompt rather than relying on
+  // @-imports from CLAUDE.md, which sit lower in the attention hierarchy and
+  // lose salience as the conversation grows.
+  const soulPath = '/workspace/group/SOUL.md';
+  const persona = fs.existsSync(soulPath)
+    ? fs.readFileSync(soulPath, 'utf-8').trim()
+    : undefined;
+
+  const appendParts = [persona, globalClaudeMd].filter(
+    (s): s is string => Boolean(s),
+  );
+  const systemAppend = appendParts.length
+    ? appendParts.join('\n\n---\n\n')
+    : undefined;
+  if (persona) log(`Loaded persona (${persona.length} chars) into system prompt`);
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -450,11 +466,11 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
+      systemPrompt: systemAppend
         ? {
             type: 'preset' as const,
             preset: 'claude_code' as const,
-            append: globalClaudeMd,
+            append: systemAppend,
           }
         : {
             type: 'preset' as const,

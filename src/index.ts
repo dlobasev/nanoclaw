@@ -315,6 +315,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       resetGroupSession(group.folder);
       delete sessions[group.folder];
       clearGroupBlocked(group.folder);
+      // Force the running container to exit so the next message spawns a fresh
+      // one — otherwise it would resume from its stale in-memory sessionId and
+      // replay the poisoned context (system prompt with IDENTITY/SOUL is only
+      // injected on initial query, not on resume).
+      queue.closeStdin(chatJid);
       lastAgentTimestamp[chatJid] = newCursor;
       saveState();
       try {
