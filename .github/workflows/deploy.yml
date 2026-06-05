@@ -1,0 +1,26 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Lightsail
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ubuntu
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+            cd ~/nanoclaw
+            git fetch origin main
+            git reset --hard origin/main
+            pnpm install
+            pnpm run build
+            ./container/build.sh
+            systemctl --user restart nanoclaw-v2-899f8402.service
