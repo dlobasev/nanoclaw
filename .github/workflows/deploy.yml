@@ -20,6 +20,7 @@ jobs:
             cd ~/nanoclaw
             git fetch origin main
             git reset --hard origin/main
+            rm -rf groups/main groups/global
             pnpm install
             pnpm run build
             ./container/build.sh
