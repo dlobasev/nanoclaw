@@ -53,6 +53,17 @@ export interface ResourceDef {
   /** Primary key column name. */
   idColumn: string;
   /**
+   * Optional prefix for auto-generated ids. When set, `genericCreate` mints
+   * ids in the form `${idPrefix}-${Date.now()}-${random6}` for `idColumn`
+   * (e.g. 'ag-1780677994184-cdt81b'). When unset, falls back to randomUUID().
+   *
+   * Use this for resources whose ids are passed to external systems with
+   * format expectations — most importantly `agent_groups.id`, which becomes
+   * the OneCLI agent identifier. OneCLI rejects raw uuids with 400, so a
+   * uuid-id agent can never have its container spawn.
+   */
+  idPrefix?: string;
+  /**
    * Column that carries the agent group ID for group-scope enforcement.
    * Required on every resource in the CLI whitelist (groups, sessions,
    * destinations, members). When absent, post-handler filtering fails closed.
@@ -133,7 +144,9 @@ function genericCreate(def: ResourceDef) {
     for (const col of def.columns) {
       if (col.generated) {
         if (col.name === def.idColumn) {
-          values[col.name] = randomUUID();
+          values[col.name] = def.idPrefix
+            ? `${def.idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            : randomUUID();
         } else if (col.name.endsWith('_at')) {
           values[col.name] = new Date().toISOString();
         }

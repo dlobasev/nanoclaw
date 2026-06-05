@@ -7,8 +7,14 @@ registerResource({
   description:
     'Messaging group — one chat or channel on one platform (a Telegram DM, a Discord channel, a Slack thread root, an email address). Identity is the (channel_type, platform_id) pair, which must be unique.',
   idColumn: 'id',
+  idPrefix: 'mg',
   columns: [
-    { name: 'id', type: 'string', description: 'UUID.', generated: true },
+    {
+      name: 'id',
+      type: 'string',
+      description: 'Auto-generated in format mg-<timestamp>-<random6>.',
+      generated: true,
+    },
     {
       name: 'channel_type',
       type: 'string',
