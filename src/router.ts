@@ -27,6 +27,7 @@ import {
   getMessagingGroupWithAgentCount,
 } from './db/messaging-groups.js';
 import { findSessionForAgent } from './db/sessions.js';
+import { findOwningAgent } from './db/outbound-message-index.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
@@ -143,12 +144,51 @@ export function setChannelRequestGate(fn: ChannelRequestGateFn): void {
   channelRequestGate = fn;
 }
 
-function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string } {
+function safeParseContent(raw: string): {
+  text?: string;
+  sender?: string;
+  senderId?: string;
+  type?: string;
+  messageId?: string;
+  replyTo?: { text?: string; sender?: string; messageId?: string };
+} {
   try {
     return JSON.parse(raw);
   } catch {
     return { text: raw };
   }
+}
+
+/**
+ * Find the agent that originally sent the message this event is responding to.
+ *
+ * Two event shapes carry an outbound-message reference:
+ *   - reactions: `content.type='reaction'` with `content.messageId` set to the
+ *     platform id of the reacted-to message
+ *   - replies:   `content.replyTo.messageId` set to the platform id of the
+ *     replied-to message
+ *
+ * When the referenced message is in `outbound_message_index` (i.e. one of our
+ * agents sent it), this function returns that agent's id. The router uses it
+ * to route the inbound directly to the owning agent, bypassing the wiring's
+ * engage_pattern — without this, a reaction on krasivo's draft would route to
+ * whichever agent's pattern happens to match the synthetic reaction text.
+ */
+function resolveOwningAgentFromEvent(
+  event: InboundEvent,
+  parsed: ReturnType<typeof safeParseContent>,
+): string | null {
+  // Reaction event: messageId at the top level of content.
+  if (parsed.type === 'reaction' && parsed.messageId) {
+    const owner = findOwningAgent(event.channelType, event.platformId, String(parsed.messageId));
+    if (owner) return owner.agentGroupId;
+  }
+  // Reply event: replyTo.messageId nested in content.
+  if (parsed.replyTo?.messageId) {
+    const owner = findOwningAgent(event.channelType, event.platformId, String(parsed.replyTo.messageId));
+    if (owner) return owner.agentGroupId;
+  }
+  return null;
 }
 
 /**
@@ -270,15 +310,27 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   const parsed = safeParseContent(event.message.content);
   const messageText = parsed.text ?? '';
 
+  // 3b. Owning-agent lookup. If this event is a reaction or a reply targeting
+  //     a message a prior agent sent, route it straight to that agent and skip
+  //     every other wired agent for this event — including their `accumulate`
+  //     hooks, since the user clearly addressed one specific agent. Falls back
+  //     to normal pattern fan-out when no owner is found (older outbound,
+  //     fresh chats, or non-agent reference).
+  const owningAgentId = resolveOwningAgentFromEvent(event, parsed);
+  const ownerIsWired = owningAgentId && agents.some((a) => a.agent_group_id === owningAgentId);
+
   let engagedCount = 0;
   let accumulatedCount = 0;
   let subscribed = false;
 
   for (const agent of agents) {
+    if (ownerIsWired && agent.agent_group_id !== owningAgentId) continue;
+
     const agentGroup = getAgentGroup(agent.agent_group_id);
     if (!agentGroup) continue;
 
-    const engages = evaluateEngage(agent, messageText, isMention, mg, event.threadId);
+    const ownerEngage = ownerIsWired && agent.agent_group_id === owningAgentId;
+    const engages = ownerEngage || evaluateEngage(agent, messageText, isMention, mg, event.threadId);
 
     const accessOk = engages && (!accessGate || accessGate(event, userId, mg, agent.agent_group_id).allowed);
     const scopeOk = engages && (!senderScopeGate || senderScopeGate(event, userId, mg, agent).allowed);

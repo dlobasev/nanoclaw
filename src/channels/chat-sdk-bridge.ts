@@ -39,6 +39,13 @@ interface GatewayAdapter extends Adapter {
 export interface ReplyContext {
   text: string;
   sender: string;
+  /**
+   * Platform-assigned id of the message being replied to. When present, the
+   * host router uses it to find the originating agent in
+   * `outbound_message_index` and route the reply directly there, bypassing
+   * pattern matching. Optional because not every platform supplies it.
+   */
+  messageId?: string;
 }
 
 /** Extract reply context from a platform-specific raw message. Return null if no reply. */

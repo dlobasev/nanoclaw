@@ -20,6 +20,7 @@ import {
   markDeliveryFailed,
   migrateDeliveredTable,
 } from './db/session-db.js';
+import { recordOutboundMessage } from './db/outbound-message-index.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
@@ -191,6 +192,18 @@ async function drainSession(session: Session): Promise<void> {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         markDelivered(inDb, msg.id, platformMsgId ?? null);
+        // Central index for router-side owning-agent lookup on reactions and
+        // replies. Only meaningful for real channel sends — system actions and
+        // agent-to-agent traffic have no platform message to react/reply to.
+        if (platformMsgId && msg.channel_type && msg.platform_id && msg.kind !== 'system' && msg.channel_type !== 'agent') {
+          recordOutboundMessage(
+            msg.channel_type,
+            msg.platform_id,
+            platformMsgId,
+            session.agent_group_id,
+            session.id,
+          );
+        }
         deliveryAttempts.delete(msg.id);
 
         // Pause the typing indicator after a real user-facing message
