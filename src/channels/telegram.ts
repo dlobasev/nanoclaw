@@ -203,6 +203,11 @@ registerChannelAdapter('telegram', {
     const telegramAdapter = createTelegramAdapter({
       botToken: token,
       mode: 'polling',
+      // Default getUpdates excludes message_reaction. Opt in so the bridge
+      // can deliver user reactions as inbound events.
+      longPolling: {
+        allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
+      },
     });
     const bridge = createChatSdkBridge({
       adapter: telegramAdapter,

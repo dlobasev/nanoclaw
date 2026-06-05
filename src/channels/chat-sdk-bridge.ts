@@ -103,6 +103,17 @@ function resolveSelectedOption(
   return candidate;
 }
 
+/**
+ * Strip the `:<agent_group_id>` suffix that `router.messageIdForAgent`
+ * appends to inbound message ids for cross-session uniqueness. Adapters only
+ * understand the platform's own composite format (e.g. Telegram's
+ * `<chatId>:<msgId>`), so reaction/edit ops must pass the stripped form or
+ * the adapter's parser falls back to `parseInt` and targets the wrong id.
+ */
+function stripAgentSuffix(messageId: string): string {
+  return messageId.replace(/:ag-[a-z0-9-]+$/i, '');
+}
+
 export function splitForLimit(text: string, limit: number): string[] {
   if (text.length <= limit) return [text];
   const chunks: string[] = [];
@@ -265,6 +276,41 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false, true));
       });
 
+      // Inbound reactions — when a user adds/removes an emoji reaction on a
+      // message in a thread we can see. Filters out reactions placed by our
+      // own bot to avoid echoing the agent's add_reaction calls back as
+      // inbound events. Delivered as kind:'chat-sdk' with content.type='reaction'
+      // so the router treats it as a regular conversational signal.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      chat.onReaction(async (event: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const userId: string | undefined = (event.user as any)?.userId;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const botUserId: string | undefined = (adapter as any).botUserId;
+        if (userId && botUserId && String(userId) === String(botUserId)) return;
+
+        const channelId = adapter.channelIdFromThreadId(event.thread.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const userName: string = (event.user as any)?.fullName ?? (event.user as any)?.userName ?? userId ?? 'someone';
+        const verb = event.added ? 'reacted' : 'un-reacted';
+        const inbound: InboundMessage = {
+          id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind: 'chat-sdk',
+          content: {
+            type: 'reaction',
+            added: event.added,
+            emoji: event.rawEmoji,
+            messageId: event.messageId,
+            author: { userId, fullName: userName },
+            text: `${userName} ${verb} ${event.rawEmoji} to message ${event.messageId}`,
+          },
+          timestamp: new Date().toISOString(),
+          isMention: false,
+          isGroup: false,
+        };
+        await setupConfig.onInbound(channelId, event.thread.id, inbound);
+      });
+
       // Handle button clicks (ask_user_question)
       chat.onAction(async (event) => {
         if (!event.actionId.startsWith('ncq:')) return;
@@ -372,14 +418,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       const content = message.content as Record<string, unknown>;
 
       if (content.operation === 'edit' && content.messageId) {
-        await adapter.editMessage(tid, content.messageId as string, {
+        await adapter.editMessage(tid, stripAgentSuffix(content.messageId as string), {
           markdown: transformText((content.text as string) || (content.markdown as string) || ''),
         });
         return;
       }
 
       if (content.operation === 'reaction' && content.messageId && content.emoji) {
-        await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        await adapter.addReaction(tid, stripAgentSuffix(content.messageId as string), content.emoji as string);
         return;
       }
 
