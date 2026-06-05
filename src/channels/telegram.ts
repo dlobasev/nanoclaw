@@ -42,10 +42,20 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 5
 function extractReplyContext(raw: Record<string, any>): ReplyContext | null {
   if (!raw.reply_to_message) return null;
   const reply = raw.reply_to_message;
+  // The chat-sdk normalizes Telegram message ids to "<chatId>:<message_id>"
+  // for delivery + outbound_message_index. The raw Telegram update gives us
+  // only the bare numeric `reply.message_id`, so we have to rebuild the
+  // prefixed form here from the parent message's `raw.chat.id` (the chat is
+  // the same for the reply and the message being replied to — Telegram has
+  // no cross-chat replies). Without the prefix, owning-agent lookup in
+  // router.ts misses every reply and falls back to pattern routing.
+  const chatId = raw.chat?.id;
+  const rawMsgId = reply.message_id;
+  const messageId = rawMsgId != null ? (chatId != null ? `${chatId}:${rawMsgId}` : String(rawMsgId)) : undefined;
   return {
     text: reply.text || reply.caption || '',
     sender: reply.from?.first_name || reply.from?.username || 'Unknown',
-    messageId: reply.message_id != null ? String(reply.message_id) : undefined,
+    messageId,
   };
 }
 
