@@ -63,12 +63,48 @@ Files you create are saved in `/workspace/agent/`. Use this for notes, research,
 
 The file `CLAUDE.local.md` in your workspace is your per-group memory. Read it at the start of every session — it's how you persist across time. Record things there that you'll want to remember in future sessions: user preferences, project context, recurring facts. Keep entries short and structured.
 
+## Knowledge base (LLM-wiki pattern)
+
+Your workspace is a 3-layer knowledge base. Respect the layer boundaries.
+
+- `sources/` — **RAW, immutable**. Verbatim user inputs and ingested documents. One file per ingest, named `YYYY-MM-DD-<slug>.md`, with frontmatter:
+  ```
+  ---
+  date: 2026-06-05T14:32:00Z
+  channel: telegram
+  topic: <free-form>
+  related: [wiki/<page>, projects/<name>]
+  ---
+  ```
+  After writing a source file, never edit it. If the user corrects themselves later, write a new source — don't mutate the old one.
+
+- `wiki/` — **distilled, you own it entirely**. Entity pages (people, companies), concept pages, cross-references. Every non-trivial claim links back to a source: `[2026-06-05-italian-kitchen-pricing](sources/2026-06-05-italian-kitchen-pricing.md)`. Rewriting/restructuring wiki pages is fine and expected — that's why sources are immutable.
+
+- `projects/` — long-lived project pages. Same rules as `wiki/` but scoped to a specific project the user works on. Each `projects/<name>.md` is the project's home; sub-files go in `projects/<name>/`.
+
+### Ingest workflow
+
+When the user signals "save / remember / запомни / сохрани / запиши / положи к / зафиксируй / помни / не забудь":
+
+1. **First**: write the user's message **verbatim** to `sources/YYYY-MM-DD-<slug>.md` with frontmatter. No paraphrasing, no editing, no "fixing" their wording. If they include a link or paste, keep it as-is.
+2. **Then**: update or create the relevant `wiki/*.md` or `projects/*.md` with the distilled version. Every claim there links back to the source you just wrote.
+
+If the user gives you new info without an explicit save marker but it's clearly worth keeping (a recurring fact, a project decision, a person's role), still file it as a source first, then distill. When in doubt, save — sources are cheap.
+
+### Query workflow
+
+Search `wiki/` and `projects/` first. If the answer isn't there or feels stale, drop down to `sources/` and synthesize on the fly — then **file the synthesis as a new wiki page** so the next query is cheap. Never answer from `sources/` without also updating the wiki.
+
+### Lint workflow
+
+When asked to "check the wiki" or "проверь записи" — and proactively when you notice it — scan for: contradictions between wiki pages and their sources, stale claims (the source has been superseded by a newer one on the same topic), orphan pages (no inbound links), wiki pages with no source citations. Report findings; ask before deleting.
+
 ## Memory
 
-When the user shares substantive information, store it somewhere you can retrieve when relevant. Information pertinent to every turn goes into `CLAUDE.local.md`. Otherwise create a dedicated file by type — a file of people the user mentions, a file of projects, etc. For every file you create, add a concise reference in `CLAUDE.local.md` so you can find it later.
+`CLAUDE.local.md` in your workspace holds always-on context — user preferences, naming conventions, the current state of the world the user operates in. Read it at the start of every session.
 
-A core part of being useful is how well you build these systems for organizing what you know about the user and their work. Evolve them over time.
+Anything substantive enough to outlive a single conversation goes through the knowledge base above, not into `CLAUDE.local.md`. Reserve `CLAUDE.local.md` for the index and the always-on bits.
 
 ## Conversation history
 
-The `conversations/` folder in your workspace holds searchable transcripts of past sessions. Use it to recall prior context when a request references something earlier. For structured long-lived data, prefer dedicated files (`customers.md`, `preferences.md`); split any file over ~500 lines into a folder with an index.
+The `conversations/` folder in your workspace holds searchable transcripts of past sessions. Use it to recall prior context when a request references something earlier. When a past conversation surfaces a fact worth keeping, promote it into the knowledge base (`sources/` + `wiki/`) — conversations are scratch, the wiki is durable.
