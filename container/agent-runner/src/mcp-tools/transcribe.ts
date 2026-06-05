@@ -3,8 +3,12 @@
  *
  * The Telegram bridge downloads voice notes as .ogg files into the agent's
  * inbox (referenced in the formatter as `[voice: ... — saved to /workspace/inbox/...]`).
- * This tool transcribes them on demand using OPENAI_API_KEY from the
- * container environment.
+ * This tool transcribes them on demand.
+ *
+ * Auth: the container's HTTPS_PROXY routes outbound traffic through OneCLI's
+ * gateway, which injects the OpenAI API key into the Authorization header
+ * (vault secret named `OpenAI`, host pattern `api.openai.com`). No api key is
+ * read from env — we send a placeholder Bearer that the gateway overwrites.
  */
 import fs from 'fs';
 import path from 'path';
@@ -39,8 +43,6 @@ export const transcribeAudio: McpToolDefinition = {
   },
   async handler(args) {
     const filePath = String(args.path ?? '');
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return err('OPENAI_API_KEY is not set in the container environment');
     if (!filePath) return err('path is required');
     if (!fs.existsSync(filePath)) return err(`File not found: ${filePath}`);
 
@@ -54,11 +56,18 @@ export const transcribeAudio: McpToolDefinition = {
     try {
       const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
+        // Placeholder bearer — OneCLI gateway replaces with the real OpenAI
+        // key from the vault if the agent has access to the `OpenAI` secret.
+        headers: { Authorization: 'Bearer onecli-inject' },
         body: form,
       });
       if (!res.ok) {
         const detail = await res.text();
+        if (res.status === 401) {
+          return err(
+            `Whisper API 401 — OneCLI did not inject the OpenAI key. Verify the agent is allowed to use the OpenAI secret (PUT /api/agents/<id>/secrets).`,
+          );
+        }
         return err(`Whisper API ${res.status}: ${detail.slice(0, 300)}`);
       }
       const transcript = (await res.text()).trim();
