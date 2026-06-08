@@ -174,10 +174,7 @@ function safeParseContent(raw: string): {
  * engage_pattern — without this, a reaction on krasivo's draft would route to
  * whichever agent's pattern happens to match the synthetic reaction text.
  */
-function resolveOwningAgentFromEvent(
-  event: InboundEvent,
-  parsed: ReturnType<typeof safeParseContent>,
-): string | null {
+function resolveOwningAgentFromEvent(event: InboundEvent, parsed: ReturnType<typeof safeParseContent>): string | null {
   // Reaction event: messageId at the top level of content.
   if (parsed.type === 'reaction' && parsed.messageId) {
     const owner = findOwningAgent(event.channelType, event.platformId, String(parsed.messageId));

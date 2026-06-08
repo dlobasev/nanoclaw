@@ -195,14 +195,14 @@ async function drainSession(session: Session): Promise<void> {
         // Central index for router-side owning-agent lookup on reactions and
         // replies. Only meaningful for real channel sends — system actions and
         // agent-to-agent traffic have no platform message to react/reply to.
-        if (platformMsgId && msg.channel_type && msg.platform_id && msg.kind !== 'system' && msg.channel_type !== 'agent') {
-          recordOutboundMessage(
-            msg.channel_type,
-            msg.platform_id,
-            platformMsgId,
-            session.agent_group_id,
-            session.id,
-          );
+        if (
+          platformMsgId &&
+          msg.channel_type &&
+          msg.platform_id &&
+          msg.kind !== 'system' &&
+          msg.channel_type !== 'agent'
+        ) {
+          recordOutboundMessage(msg.channel_type, msg.platform_id, platformMsgId, session.agent_group_id, session.id);
         }
         deliveryAttempts.delete(msg.id);
 
