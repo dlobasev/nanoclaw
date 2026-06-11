@@ -167,6 +167,18 @@ const preToolUseHook: HookCallback = async (input) => {
       stopReason: `Tool '${toolName}' is not available in this environment — use the nanoclaw equivalent.`,
     } as unknown as ReturnType<HookCallback>;
   }
+  // Write tool has no built-in overwrite protection (unlike Edit which requires
+  // a prior Read). Block Write to existing paths so agents can't silently
+  // clobber wiki/project/source files they didn't actually read.
+  if (toolName === 'Write') {
+    const filePath = i.tool_input?.file_path;
+    if (typeof filePath === 'string' && fs.existsSync(filePath)) {
+      return {
+        decision: 'block',
+        stopReason: `Refusing Write to existing file ${filePath}. Read it first, then use Edit to modify it. If you genuinely need to start over, delete the file via Bash (rm) first — but check what you're losing.`,
+      } as unknown as ReturnType<HookCallback>;
+    }
+  }
   // Bash exposes its timeout via the tool_input.timeout field (ms). Any other
   // tool: no declared timeout.
   const declaredTimeoutMs =
