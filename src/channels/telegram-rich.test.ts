@@ -234,7 +234,9 @@ describe('sendTelegramRichMessage', () => {
       chat_id: '12345',
       rich_message: { markdown: '# hello\n\n$$x^2$$' },
     });
-    expect(r).toEqual({ id: '4242', threadId: '12345' });
+    // Composite "<chatId>:<message_id>" id, matching the SDK and the inbound
+    // reply shape so owning-agent reply lookup matches (not bare '4242').
+    expect(r).toEqual({ id: '12345:4242', threadId: '12345' });
   });
 
   it('forwards message_thread_id as a number when the threadId carries one', async () => {
@@ -251,12 +253,15 @@ describe('sendTelegramRichMessage', () => {
   // split(':')[0] sent chat_id="telegram" → Telegram "chat not found", which
   // silently dropped every image/long-markdown draft.
   it('strips the telegram: prefix from the platform-encoded threadId', async () => {
-    await sendTelegramRichMessage('T', 'telegram:6037840640', 'body');
+    const r = await sendTelegramRichMessage('T', 'telegram:6037840640', 'body');
 
     const f = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
     const body = JSON.parse((f.mock.calls[0][1]?.body as string) ?? '{}');
     expect(body.chat_id).toBe('6037840640');
     expect(body.message_thread_id).toBeUndefined();
+    // Returned id uses the decoded chatId, not the "telegram:"-prefixed thread
+    // id, so it matches outbound_message_index and inbound replies exactly.
+    expect(r.id).toBe('6037840640:4242');
   });
 
   it('throws with Telegram description when the API returns ok=false', async () => {

@@ -248,7 +248,10 @@ async function sendTelegramPhoto(
   });
   const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
   if (!json.ok) throw new Error(`Telegram sendPhoto failed: ${json.description ?? 'unknown'}`);
-  return { id: String(json.result!.message_id), threadId };
+  // Composite "<chatId>:<message_id>" id — must match the SDK's postMessage form
+  // and extractReplyContext's inbound shape, or owning-agent reply/reaction
+  // lookup misses every photo we send and the reply routes to the wrong agent.
+  return { id: `${chatId}:${json.result!.message_id}`, threadId };
 }
 
 registerChannelAdapter('telegram', {

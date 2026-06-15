@@ -96,7 +96,13 @@ export async function sendTelegramRichMessage(token: string, threadId: string, m
   if (!json.ok) {
     throw new Error(`Telegram sendRichMessage failed: ${json.description ?? 'unknown'}`);
   }
-  return { id: String(json.result!.message_id), threadId };
+  // Return the composite "<chatId>:<message_id>" id, not the bare numeric one.
+  // The SDK's own postMessage uses this form, outbound_message_index stores it,
+  // and extractReplyContext (telegram.ts) rebuilds inbound replies into the same
+  // shape. A bare id here makes owning-agent reply/reaction lookup miss for every
+  // rich-delivered message, so the reply falls back to engage_pattern routing and
+  // lands on the wrong agent.
+  return { id: `${chatId}:${json.result!.message_id}`, threadId };
 }
 
 export function isImageFile(file: OutboundFile): boolean {
