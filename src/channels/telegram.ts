@@ -13,6 +13,13 @@ import { upsertUser } from '../modules/permissions/db/users.js';
 import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
 import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js';
 import { registerChannelAdapter } from './channel-registry.js';
+import {
+  TELEGRAM_RICH_LIMIT,
+  sendTelegramRichMessage,
+  wrapPostMessageWithRich,
+  type PostMessageFn,
+  type TelegramSenders,
+} from './telegram-rich.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
 import { tryConsume } from './telegram-pairing.js';
 
@@ -206,17 +213,16 @@ function createPairingInterceptor(
   };
 }
 
-// Vercel Chat SDK's @chat-adapter/telegram@4.26.0 outbound only supports
-// sendDocument — there's no sendPhoto path. PNG/JPG uploads arrive in chat as
-// file attachments (icon + filename), not as inline previews. For our writer
-// agents who attach hero images to draft posts, this kills the visual review
-// UX. We monkey-patch the adapter's postMessage: when exactly one file is
-// attached and its extension is an image, we call Telegram's sendPhoto
-// directly and skip the document path. Any failure (oversized caption,
-// network error, etc.) falls through to the original sendDocument so we
-// never lose the message.
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
-
+// Vercel Chat SDK's @chat-adapter/telegram@4.30.0 outbound predates Bot API
+// 10.1 — no sendPhoto, no sendRichMessage. We monkey-patch the adapter's
+// postMessage with two layers:
+//   1. Single-image attachments go through sendPhoto for inline previews
+//      instead of sendDocument's file-attachment rendering.
+//   2. Long markdown (text-only > 4000 chars, or image+text > 1024 chars)
+//      goes through sendRichMessage for up to 32 KiB with native rich
+//      markdown parsing. See telegram-rich.ts.
+// Both layers fall back to the original SDK path on failure so we never
+// silently lose a message.
 async function sendTelegramPhoto(
   token: string,
   threadId: string,
@@ -258,31 +264,30 @@ registerChannelAdapter('telegram', {
         allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
       },
     });
-    // Image-preview patch: intercept single-image uploads and route through sendPhoto.
+    // Compose the postMessage patch: rich-message routing wraps the
+    // sendPhoto-and-original-fallback pair. The bridge's transformOutboundText
+    // is intentionally NOT set here — rich markdown is a different dialect
+    // than legacy V1, so sanitization happens inside the wrapper only on the
+    // plain-message branches (see telegram-rich.ts).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const adapterAny = telegramAdapter as any;
-    const originalPostMessage = adapterAny.postMessage.bind(telegramAdapter);
-    adapterAny.postMessage = async (
-      threadId: string,
-      content: { markdown?: string; files?: Array<{ data: Buffer; filename: string }> },
-    ) => {
-      const files = content.files;
-      if (Array.isArray(files) && files.length === 1 && IMAGE_EXT_RE.test(files[0].filename)) {
-        try {
-          return await sendTelegramPhoto(token, threadId, files[0], content.markdown ?? '');
-        } catch (err) {
-          log.warn('Telegram sendPhoto failed, falling back to sendDocument', { err: String(err) });
-        }
-      }
-      return originalPostMessage(threadId, content);
+    const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
+    const senders: TelegramSenders = {
+      sendPhoto: (threadId, file, caption) => sendTelegramPhoto(token, threadId, file, caption),
+      sendRichMessage: (threadId, markdown) => sendTelegramRichMessage(token, threadId, markdown),
     };
+    adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, sanitizeTelegramLegacyMarkdown);
+
     const bridge = createChatSdkBridge({
       adapter: telegramAdapter,
       concurrency: 'concurrent',
       extractReplyContext,
       supportsThreads: false,
-      transformOutboundText: sanitizeTelegramLegacyMarkdown,
-      maxTextLength: 4000,
+      // maxTextLength matches the rich-message ceiling so single replies up to
+      // 32 KiB reach the wrapper as one chunk; the wrapper picks plain vs rich
+      // per call. Larger payloads still chunk at the bridge layer and each
+      // chunk gets the same per-call routing decision.
+      maxTextLength: TELEGRAM_RICH_LIMIT,
     });
 
     const botUsernamePromise = fetchBotUsername(token);
