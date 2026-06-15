@@ -62,8 +62,26 @@ interface TelegramApiResponse {
   description?: string;
 }
 
+/**
+ * Decode the chat id (and optional message-thread id) from the thread id the
+ * bridge hands to postMessage. That value is the platform-encoded form
+ * `telegram:<chatId>` (or `telegram:<chatId>:<messageThreadId>` once threads are
+ * enabled), e.g. `telegram:6037840640` or `telegram:-1001234567890`. The SDK's
+ * own postMessage decodes this internally, but our custom senders call the Bot
+ * API directly, so they must strip the `telegram:` channel prefix themselves —
+ * otherwise `chat_id` becomes the literal string "telegram" and Telegram replies
+ * "chat not found". (Bare `<chatId>` without the prefix is handled too, for
+ * forward-compat.)
+ */
+export function parseTelegramTarget(threadId: string): { chatId: string; messageThreadId?: string } {
+  const parts = threadId.split(':');
+  if (parts[0] === 'telegram') parts.shift();
+  const [chatId, messageThreadId] = parts;
+  return { chatId, messageThreadId };
+}
+
 export async function sendTelegramRichMessage(token: string, threadId: string, markdown: string): Promise<PostResult> {
-  const [chatId, messageThreadId] = threadId.split(':');
+  const { chatId, messageThreadId } = parseTelegramTarget(threadId);
   const body: Record<string, unknown> = {
     chat_id: chatId,
     rich_message: { markdown },

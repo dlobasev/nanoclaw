@@ -4,6 +4,7 @@ import {
   TELEGRAM_CAPTION_LIMIT,
   TELEGRAM_PLAIN_LIMIT,
   TELEGRAM_RICH_LIMIT,
+  parseTelegramTarget,
   sendTelegramRichMessage,
   wrapPostMessageWithRich,
   type OutboundFile,
@@ -245,6 +246,19 @@ describe('sendTelegramRichMessage', () => {
     expect(body.message_thread_id).toBe(7);
   });
 
+  // Regression: the bridge hands postMessage the platform-encoded thread id
+  // ("telegram:<chatId>"), not a bare chat id. Before parseTelegramTarget,
+  // split(':')[0] sent chat_id="telegram" → Telegram "chat not found", which
+  // silently dropped every image/long-markdown draft.
+  it('strips the telegram: prefix from the platform-encoded threadId', async () => {
+    await sendTelegramRichMessage('T', 'telegram:6037840640', 'body');
+
+    const f = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse((f.mock.calls[0][1]?.body as string) ?? '{}');
+    expect(body.chat_id).toBe('6037840640');
+    expect(body.message_thread_id).toBeUndefined();
+  });
+
   it('throws with Telegram description when the API returns ok=false', async () => {
     globalThis.fetch = vi.fn(
       async () =>
@@ -254,5 +268,27 @@ describe('sendTelegramRichMessage', () => {
     ) as unknown as typeof fetch;
 
     await expect(sendTelegramRichMessage('T', '1', 'x')).rejects.toThrow(/METHOD_NOT_FOUND/);
+  });
+});
+
+describe('parseTelegramTarget', () => {
+  it('strips the telegram: channel prefix the bridge encodes', () => {
+    expect(parseTelegramTarget('telegram:6037840640')).toEqual({ chatId: '6037840640', messageThreadId: undefined });
+  });
+
+  it('keeps negative group/channel chat ids intact', () => {
+    expect(parseTelegramTarget('telegram:-1001234567890')).toEqual({
+      chatId: '-1001234567890',
+      messageThreadId: undefined,
+    });
+  });
+
+  it('decodes an optional message-thread id after the prefix', () => {
+    expect(parseTelegramTarget('telegram:12345:7')).toEqual({ chatId: '12345', messageThreadId: '7' });
+  });
+
+  it('accepts a bare chat id without the prefix (forward-compat)', () => {
+    expect(parseTelegramTarget('12345')).toEqual({ chatId: '12345', messageThreadId: undefined });
+    expect(parseTelegramTarget('12345:7')).toEqual({ chatId: '12345', messageThreadId: '7' });
   });
 });

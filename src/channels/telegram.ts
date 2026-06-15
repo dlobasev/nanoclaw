@@ -15,6 +15,7 @@ import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js'
 import { registerChannelAdapter } from './channel-registry.js';
 import {
   TELEGRAM_RICH_LIMIT,
+  parseTelegramTarget,
   sendTelegramRichMessage,
   wrapPostMessageWithRich,
   type PostMessageFn,
@@ -229,10 +230,10 @@ async function sendTelegramPhoto(
   file: { data: Buffer; filename: string },
   caption: string,
 ): Promise<{ id: string; threadId: string }> {
-  // threadId format from adapter is "<chatId>" or "<chatId>:<messageThreadId>"
-  // (supportsThreads:false in our config means the second case never appears for
-  // current channels, but we handle it defensively for future-compat).
-  const [chatId, messageThreadId] = threadId.split(':');
+  // threadId is the bridge's platform-encoded form "telegram:<chatId>" (see
+  // parseTelegramTarget). It must be decoded — a bare split(':')[0] yields the
+  // "telegram" prefix as chat_id and Telegram answers "chat not found".
+  const { chatId, messageThreadId } = parseTelegramTarget(threadId);
   const formData = new FormData();
   formData.append('chat_id', chatId);
   if (messageThreadId) formData.append('message_thread_id', messageThreadId);
