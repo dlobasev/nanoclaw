@@ -206,6 +206,44 @@ function createPairingInterceptor(
   };
 }
 
+// Vercel Chat SDK's @chat-adapter/telegram@4.26.0 outbound only supports
+// sendDocument — there's no sendPhoto path. PNG/JPG uploads arrive in chat as
+// file attachments (icon + filename), not as inline previews. For our writer
+// agents who attach hero images to draft posts, this kills the visual review
+// UX. We monkey-patch the adapter's postMessage: when exactly one file is
+// attached and its extension is an image, we call Telegram's sendPhoto
+// directly and skip the document path. Any failure (oversized caption,
+// network error, etc.) falls through to the original sendDocument so we
+// never lose the message.
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
+
+async function sendTelegramPhoto(
+  token: string,
+  threadId: string,
+  file: { data: Buffer; filename: string },
+  caption: string,
+): Promise<{ id: string; threadId: string }> {
+  // threadId format from adapter is "<chatId>" or "<chatId>:<messageThreadId>"
+  // (supportsThreads:false in our config means the second case never appears for
+  // current channels, but we handle it defensively for future-compat).
+  const [chatId, messageThreadId] = threadId.split(':');
+  const formData = new FormData();
+  formData.append('chat_id', chatId);
+  if (messageThreadId) formData.append('message_thread_id', messageThreadId);
+  formData.append('photo', new Blob([new Uint8Array(file.data)]), file.filename);
+  if (caption) {
+    formData.append('caption', caption);
+    formData.append('parse_mode', 'Markdown');
+  }
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+    method: 'POST',
+    body: formData,
+  });
+  const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
+  if (!json.ok) throw new Error(`Telegram sendPhoto failed: ${json.description ?? 'unknown'}`);
+  return { id: String(json.result!.message_id), threadId };
+}
+
 registerChannelAdapter('telegram', {
   factory: () => {
     const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
@@ -220,6 +258,24 @@ registerChannelAdapter('telegram', {
         allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
       },
     });
+    // Image-preview patch: intercept single-image uploads and route through sendPhoto.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const adapterAny = telegramAdapter as any;
+    const originalPostMessage = adapterAny.postMessage.bind(telegramAdapter);
+    adapterAny.postMessage = async (
+      threadId: string,
+      content: { markdown?: string; files?: Array<{ data: Buffer; filename: string }> },
+    ) => {
+      const files = content.files;
+      if (Array.isArray(files) && files.length === 1 && IMAGE_EXT_RE.test(files[0].filename)) {
+        try {
+          return await sendTelegramPhoto(token, threadId, files[0], content.markdown ?? '');
+        } catch (err) {
+          log.warn('Telegram sendPhoto failed, falling back to sendDocument', { err: String(err) });
+        }
+      }
+      return originalPostMessage(threadId, content);
+    };
     const bridge = createChatSdkBridge({
       adapter: telegramAdapter,
       concurrency: 'concurrent',
