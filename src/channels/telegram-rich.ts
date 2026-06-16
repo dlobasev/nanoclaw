@@ -3,16 +3,21 @@
  *
  * The Chat SDK adapter (4.30.0) predates Bot API 10.1 and exposes only
  * sendMessage / sendPhoto / sendDocument. We intercept its `postMessage` and
- * route four cases:
+ * route these cases:
  *
- *   1. Image + caption > 1024 chars → sendPhoto (empty caption) + sendRichMessage.
- *      sendRichMessage has no multipart upload path in 10.1, so single-bubble
- *      image+long-text is not achievable; photo first, body second is the
- *      closest equivalent. Reactions/replies anchor to the photo id.
+ *   1. Image + caption > 1024 chars → sendPhoto with as much caption as fits
+ *      (cut on a paragraph/sentence boundary) + plain continuation bubble(s)
+ *      for the remainder. Never rich: a photo post must read as photo + text,
+ *      and Bot API 10.1 has no single-bubble image+long-text anyway.
+ *      Reactions/replies anchor to the photo id.
  *
  *   2. Image + short caption → existing sendPhoto path (unchanged behavior).
  *
- *   3. No files + text > sendMessage limit → sendRichMessage. 32 KiB cap.
+ *   3. No files + text > sendMessage limit → sendRichMessage, but ONLY into a
+ *      private DM (positive Telegram chat id). Channels/groups (negative id)
+ *      get plain chunked bubbles — a public post must never render in the rich
+ *      font. In this install that keeps rich to the owner/assistant DM; channel
+ *      writers publish to negative-id channels and so never go rich. 32 KiB cap.
  *
  *   4. Otherwise → original SDK postMessage (legacy sendMessage / sendDocument).
  *
@@ -113,6 +118,39 @@ function truncateRich(text: string): string {
   return text.length <= TELEGRAM_RICH_LIMIT ? text : text.slice(0, TELEGRAM_RICH_LIMIT);
 }
 
+/**
+ * Split text for a single photo caption: take the largest prefix that fits in
+ * `limit`, cutting on a paragraph break, then a sentence end, then a line
+ * break, then a space, so the caption reads as a clean unit. The remainder
+ * (trimmed) continues in a follow-up bubble. Replaces the old photo+rich path
+ * so image posts never render in the rich font.
+ */
+export function splitCaption(text: string, limit: number): { caption: string; rest: string } {
+  if (text.length <= limit) return { caption: text, rest: '' };
+  const window = text.slice(0, limit);
+  const sentenceEnd = Math.max(
+    window.lastIndexOf('. '),
+    window.lastIndexOf('.\n'),
+    window.lastIndexOf('! '),
+    window.lastIndexOf('!\n'),
+    window.lastIndexOf('? '),
+    window.lastIndexOf('?\n'),
+  );
+  // Prefer the strongest boundary that exists, taking the last occurrence that
+  // fits so the caption fills as much as possible: paragraph break, then
+  // sentence end, then line break, then a space; hard-cut only if none exist.
+  const paragraph = window.lastIndexOf('\n\n');
+  const line = window.lastIndexOf('\n');
+  const space = window.lastIndexOf(' ');
+  let cut = -1;
+  if (paragraph > 0) cut = paragraph;
+  else if (sentenceEnd >= 0) cut = sentenceEnd + 1;
+  else if (line > 0) cut = line;
+  else if (space > 0) cut = space;
+  if (cut <= 0) cut = limit;
+  return { caption: text.slice(0, cut).trimEnd(), rest: text.slice(cut).trimStart() };
+}
+
 export function wrapPostMessageWithRich(
   senders: TelegramSenders,
   originalPostMessage: PostMessageFn,
@@ -124,25 +162,30 @@ export function wrapPostMessageWithRich(
     const markdown = content.markdown ?? '';
     const files = content.files;
     const oneImage = Array.isArray(files) && files.length === 1 && isImageFile(files[0]);
+    // Rich renders only into a private DM (positive Telegram chat id). Channels
+    // and groups (negative id) always get plain text — a public post must never
+    // render in the rich font. In this install that keeps rich to the owner's
+    // DM (where the assistant sends long formatted documents); channel writers
+    // publish to negative-id channels and so never go rich.
+    const { chatId } = parseTelegramTarget(threadId);
+    const richOk = !chatId.startsWith('-');
 
+    // Image + caption over the 1024 photo-caption limit. Never rich (even in a
+    // DM): Bot API 10.1 has no single-bubble image+long-text. Send the photo
+    // with as much caption as fits, cut on a paragraph/sentence boundary, and
+    // continue the remainder in plain bubbles.
     if (oneImage && markdown.length > TELEGRAM_CAPTION_LIMIT) {
+      const { caption, rest } = splitCaption(sanitize(markdown), TELEGRAM_CAPTION_LIMIT);
       let head: PostResult;
       try {
-        head = await senders.sendPhoto(threadId, files![0], '');
+        head = await senders.sendPhoto(threadId, files![0], caption);
       } catch (photoErr) {
-        log.warn('Telegram sendPhoto failed in rich+photo path, falling back to original', {
+        log.warn('Telegram sendPhoto failed in photo+caption path, falling back to original', {
           err: String(photoErr),
         });
         return originalPostMessage(threadId, { markdown: sanitize(markdown), files });
       }
-      try {
-        await senders.sendRichMessage(threadId, truncateRich(markdown));
-      } catch (richErr) {
-        log.warn('Telegram sendRichMessage failed after photo, falling back to chunked text', {
-          err: String(richErr),
-        });
-        await deliverChunked(originalPostMessage, threadId, sanitize(markdown));
-      }
+      if (rest) await deliverChunked(originalPostMessage, threadId, rest);
       return head;
     }
 
@@ -157,15 +200,20 @@ export function wrapPostMessageWithRich(
       }
     }
 
+    // Text-only over the plain single-message limit. Rich only into a DM;
+    // channels/groups get plain chunked bubbles.
     if ((!files || files.length === 0) && markdown.length > TELEGRAM_PLAIN_LIMIT) {
-      try {
-        return await senders.sendRichMessage(threadId, truncateRich(markdown));
-      } catch (err) {
-        log.warn('Telegram sendRichMessage failed, falling back to chunked sendMessage', {
-          err: String(err),
-        });
-        return deliverChunked(originalPostMessage, threadId, sanitize(markdown));
+      if (richOk) {
+        try {
+          return await senders.sendRichMessage(threadId, truncateRich(markdown));
+        } catch (err) {
+          log.warn('Telegram sendRichMessage failed, falling back to chunked sendMessage', {
+            err: String(err),
+          });
+          return deliverChunked(originalPostMessage, threadId, sanitize(markdown));
+        }
       }
+      return deliverChunked(originalPostMessage, threadId, sanitize(markdown));
     }
 
     if (markdown) {

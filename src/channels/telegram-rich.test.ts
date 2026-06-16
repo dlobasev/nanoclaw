@@ -6,6 +6,7 @@ import {
   TELEGRAM_RICH_LIMIT,
   parseTelegramTarget,
   sendTelegramRichMessage,
+  splitCaption,
   wrapPostMessageWithRich,
   type OutboundFile,
   type PostMessageContent,
@@ -84,6 +85,21 @@ describe('wrapPostMessageWithRich', () => {
     expect(sent.length).toBe(TELEGRAM_RICH_LIMIT);
   });
 
+  it('text over the plain limit to a channel (negative id) stays plain — never rich', async () => {
+    const { senders, sendRichMessage } = makeSenders();
+    const { original, calls } = makeOriginal();
+    const post = wrapPostMessageWithRich(senders, original, identity);
+
+    const long = 'sentence. '.repeat(600); // > 4000 chars
+    expect(long.length).toBeGreaterThan(TELEGRAM_PLAIN_LIMIT);
+
+    await post('telegram:-1001302095270', { markdown: long });
+
+    expect(sendRichMessage).not.toHaveBeenCalled();
+    expect(calls.length).toBeGreaterThanOrEqual(2); // chunked plain bubbles
+    for (const c of calls) expect((c.markdown ?? '').length).toBeLessThanOrEqual(TELEGRAM_PLAIN_LIMIT);
+  });
+
   it('routes image + short caption through sendPhoto with sanitized caption', async () => {
     const { senders, sendPhoto, sendRichMessage } = makeSenders();
     const { original, calls } = makeOriginal();
@@ -98,20 +114,27 @@ describe('wrapPostMessageWithRich', () => {
     expect(r).toEqual({ id: 'p1', threadId: 'tid' });
   });
 
-  it('routes image + caption-cap-exceeding markdown through sendPhoto(empty) + sendRichMessage', async () => {
+  it('routes image + caption over the cap through sendPhoto(boundary-cut caption) + plain continuation', async () => {
     const { senders, sendPhoto, sendRichMessage } = makeSenders();
     const { original, calls } = makeOriginal();
-    const post = wrapPostMessageWithRich(senders, original, visible);
+    const post = wrapPostMessageWithRich(senders, original, identity);
 
-    const long = 'a'.repeat(TELEGRAM_CAPTION_LIMIT + 100);
+    // First paragraph < 1024 so the caption cuts on the paragraph boundary and
+    // the second paragraph continues as a plain bubble. Never rich.
+    const para1 = 'a'.repeat(900);
+    const para2 = 'b'.repeat(400);
     const img = makeImage();
 
-    const r = await post('tid', { markdown: long, files: [img] });
+    const r = await post('tid', { markdown: `${para1}\n\n${para2}`, files: [img] });
 
-    expect(sendPhoto).toHaveBeenCalledWith('tid', img, '');
-    expect(sendRichMessage).toHaveBeenCalledWith('tid', long);
-    expect(calls).toEqual([]);
-    expect(r).toEqual({ id: 'p1', threadId: 'tid' }); // photo id (head)
+    expect(sendRichMessage).not.toHaveBeenCalled();
+    expect(sendPhoto).toHaveBeenCalledTimes(1);
+    const caption = sendPhoto.mock.calls[0][2] as string;
+    expect(caption).toBe(para1); // cut on the paragraph boundary
+    expect(caption.length).toBeLessThanOrEqual(TELEGRAM_CAPTION_LIMIT);
+    expect(calls.length).toBeGreaterThanOrEqual(1); // remainder as plain bubble(s)
+    expect(calls[0].markdown).toContain('b');
+    expect(r).toEqual({ id: 'p1', threadId: 'tid' }); // photo head
   });
 
   it('falls back to chunked sendMessage when sendRichMessage fails', async () => {
@@ -133,21 +156,23 @@ describe('wrapPostMessageWithRich', () => {
     expect(r).toEqual({ id: 'o1', threadId: 'tid' });
   });
 
-  it('falls back after sendRichMessage fails in image+long path, photo head still returned', async () => {
-    const sendPhoto = vi.fn(async () => ({ id: 'p1', threadId: 'tid' }) as PostResult);
-    const sendRichMessage = vi.fn(async () => {
-      throw new Error('unsupported');
-    });
+  it('image + very long caption: photo + remainder split into plain bubbles, photo head returned', async () => {
+    const { senders, sendPhoto, sendRichMessage } = makeSenders();
     const { original, calls } = makeOriginal();
-    const post = wrapPostMessageWithRich({ sendPhoto, sendRichMessage }, original, identity);
+    const post = wrapPostMessageWithRich(senders, original, identity);
 
-    const long = 'a'.repeat(TELEGRAM_CAPTION_LIMIT + 100);
+    // Caption fills ~1024, remainder exceeds the plain limit so it splits into
+    // multiple continuation bubbles. None of it goes through rich.
+    const long = 'word '.repeat(1400); // 7000 chars
     const r = await post('tid', { markdown: long, files: [makeImage()] });
 
+    expect(sendRichMessage).not.toHaveBeenCalled();
     expect(sendPhoto).toHaveBeenCalledTimes(1);
-    expect(sendRichMessage).toHaveBeenCalledTimes(1);
-    expect(calls.length).toBeGreaterThanOrEqual(1); // body delivered via chunked text
-    expect(r).toEqual({ id: 'p1', threadId: 'tid' }); // photo head
+    const caption = sendPhoto.mock.calls[0][2] as string;
+    expect(caption.length).toBeLessThanOrEqual(TELEGRAM_CAPTION_LIMIT);
+    expect(calls.length).toBeGreaterThanOrEqual(2); // remainder split into bubbles
+    for (const c of calls) expect((c.markdown ?? '').length).toBeLessThanOrEqual(TELEGRAM_PLAIN_LIMIT);
+    expect(r).toEqual({ id: 'p1', threadId: 'tid' });
   });
 
   it('falls back to original when sendPhoto fails on image+short caption', async () => {
@@ -295,5 +320,33 @@ describe('parseTelegramTarget', () => {
   it('accepts a bare chat id without the prefix (forward-compat)', () => {
     expect(parseTelegramTarget('12345')).toEqual({ chatId: '12345', messageThreadId: undefined });
     expect(parseTelegramTarget('12345:7')).toEqual({ chatId: '12345', messageThreadId: '7' });
+  });
+});
+
+describe('splitCaption', () => {
+  it('returns the whole text and empty rest when within the limit', () => {
+    expect(splitCaption('short', 1024)).toEqual({ caption: 'short', rest: '' });
+  });
+
+  it('cuts on a paragraph boundary', () => {
+    const a = 'a'.repeat(500);
+    const b = 'b'.repeat(800);
+    const { caption, rest } = splitCaption(`${a}\n\n${b}`, 1024);
+    expect(caption).toBe(a);
+    expect(rest).toBe(b);
+  });
+
+  it('cuts on a sentence boundary when no paragraph break fits', () => {
+    const s1 = 'x'.repeat(600) + '. ';
+    const s2 = 'y'.repeat(600);
+    const { caption, rest } = splitCaption(s1 + s2, 1024);
+    expect(caption).toBe('x'.repeat(600) + '.');
+    expect(rest.startsWith('y')).toBe(true);
+  });
+
+  it('hard-cuts at the limit when no boundary exists', () => {
+    const { caption, rest } = splitCaption('z'.repeat(2000), 1024);
+    expect(caption.length).toBe(1024);
+    expect(rest.length).toBe(976);
   });
 });
