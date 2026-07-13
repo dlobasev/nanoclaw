@@ -24,4 +24,8 @@ jobs:
             pnpm install
             pnpm run build
             ./container/build.sh
+            # Stamp the sanctioned-upgrade marker so the 2.1.53+ startup tripwire
+            # doesn't crash-loop the host after a raw git-reset deploy. Must run
+            # after the build succeeds and before the restart (docs/upgrade-recovery.md).
+            pnpm exec tsx scripts/upgrade-state.ts set
             systemctl --user restart nanoclaw-v2-899f8402.service
