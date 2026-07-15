@@ -4,7 +4,10 @@ import {
   TELEGRAM_CAPTION_LIMIT,
   TELEGRAM_PLAIN_LIMIT,
   TELEGRAM_RICH_LIMIT,
+  TELEGRAM_ROW_MAX_BUTTONS,
+  chunkButtonRows,
   parseTelegramTarget,
+  relayoutCardKeyboard,
   sendTelegramRichMessage,
   splitCaption,
   wrapPostMessageWithRich,
@@ -14,6 +17,26 @@ import {
   type PostResult,
   type TelegramSenders,
 } from './telegram-rich.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function button(label: string, idx: number): any {
+  return { type: 'button', id: `ncq:q1:${idx}`, label, value: String(idx) };
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function askCard(labels: string[]): any {
+  return {
+    type: 'card',
+    title: 'Q',
+    children: [
+      { type: 'text', content: 'pick one' },
+      { type: 'actions', children: labels.map(button) },
+    ],
+  };
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function actionRows(card: any): any[] {
+  return card.children.filter((c: { type?: string }) => c.type === 'actions');
+}
 
 function makeImage(name = 'hero.png'): OutboundFile {
   return { data: Buffer.from('png'), filename: name };
@@ -205,6 +228,21 @@ describe('wrapPostMessageWithRich', () => {
     expect(calls).toEqual([{ card, fallbackText: 'fallback' }]);
   });
 
+  it('re-chunks a card keyboard into multiple rows before delivering it', async () => {
+    const { senders } = makeSenders();
+    const { original, calls } = makeOriginal();
+    const post = wrapPostMessageWithRich(senders, original, visible);
+
+    const card = askCard(['Историю бы, но короче', 'Сам угол — острый угол', 'Надоело, дай материал']);
+    await post('tid', { card, fallbackText: 'fallback' });
+
+    expect(calls).toHaveLength(1);
+    const delivered = actionRows(calls[0].card);
+    expect(delivered).toHaveLength(3); // one row per long label
+    for (const row of delivered) expect(row.children).toHaveLength(1);
+    expect(calls[0].fallbackText).toBe('fallback');
+  });
+
   it('routes non-image file (no markdown) to the original SDK', async () => {
     const { senders, sendPhoto, sendRichMessage } = makeSenders();
     const { original, calls } = makeOriginal();
@@ -228,6 +266,71 @@ describe('wrapPostMessageWithRich', () => {
 
     expect(sendPhoto).not.toHaveBeenCalled();
     expect(calls).toEqual([{ markdown: 'pair', files }]);
+  });
+});
+
+describe('chunkButtonRows', () => {
+  it('packs short labels together up to the per-row count cap', () => {
+    const rows = chunkButtonRows([button('Да', 0), button('Нет', 1), button('Не знаю', 2)]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveLength(3);
+  });
+
+  it('never exceeds the per-row button cap even with tiny labels', () => {
+    const rows = chunkButtonRows(Array.from({ length: 7 }, (_, i) => button('x', i)));
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(TELEGRAM_ROW_MAX_BUTTONS);
+    expect(rows.flat()).toHaveLength(7);
+  });
+
+  it('puts each long label on its own row', () => {
+    const long = [
+      'Историю бы, но короче',
+      'Сам угол — острый угол',
+      'Надоело, дай материал',
+      'Скажу свою (напишу сам)',
+    ];
+    const rows = chunkButtonRows(long.map(button));
+    expect(rows).toHaveLength(4);
+    for (const row of rows) expect(row).toHaveLength(1);
+  });
+
+  it('gives a single over-budget label its own row without dropping it', () => {
+    const rows = chunkButtonRows([button('a'.repeat(40), 0)]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveLength(1);
+  });
+});
+
+describe('relayoutCardKeyboard', () => {
+  it('splits one crammed Actions block into several single-row blocks for long labels', () => {
+    const card = askCard([
+      'Историю бы, но короче',
+      'Сам угол — острый угол',
+      'Надоело, дай материал',
+      'Скажу свою (напишу сам)',
+    ]);
+    const out = relayoutCardKeyboard(card) as ReturnType<typeof askCard>;
+
+    const rows = actionRows(out);
+    expect(rows).toHaveLength(4);
+    for (const row of rows) expect(row.children).toHaveLength(1);
+    // The leading text node is preserved, in order.
+    expect(out.children[0]).toEqual({ type: 'text', content: 'pick one' });
+    // Original card is not mutated.
+    expect(actionRows(card)).toHaveLength(1);
+  });
+
+  it('keeps short options in a single row', () => {
+    const out = relayoutCardKeyboard(askCard(['Да', 'Нет', 'Не знаю'])) as ReturnType<typeof askCard>;
+    const rows = actionRows(out);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].children.map((b: { label: string }) => b.label)).toEqual(['Да', 'Нет', 'Не знаю']);
+  });
+
+  it('returns non-card values unchanged', () => {
+    const notACard = { title: 'x', children: [] };
+    expect(relayoutCardKeyboard(notACard)).toBe(notACard);
+    expect(relayoutCardKeyboard(undefined)).toBeUndefined();
   });
 });
 

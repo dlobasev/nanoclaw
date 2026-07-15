@@ -35,6 +35,17 @@ export const TELEGRAM_PLAIN_LIMIT = 4000;
 export const TELEGRAM_CAPTION_LIMIT = 1024;
 export const TELEGRAM_RICH_LIMIT = 32_000;
 
+// Telegram renders each Card `Actions` block as exactly one inline-keyboard row
+// (see @chat-adapter/telegram `collectInlineKeyboardRows`). Buttons in a row
+// split the chat width equally, so several long labels in one row get squeezed
+// and truncate to "Историю…роче" — unreadable. Before sending a card we re-chunk
+// each `Actions` block into multiple single-row blocks: at most
+// TELEGRAM_ROW_MAX_BUTTONS per row, and never letting a row's combined label
+// length exceed TELEGRAM_ROW_LABEL_BUDGET. Long labels end up one per row; short
+// ones (Да / Нет / Не знаю) still pack together.
+export const TELEGRAM_ROW_MAX_BUTTONS = 3;
+export const TELEGRAM_ROW_LABEL_BUDGET = 24;
+
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
 
 export interface OutboundFile {
@@ -151,13 +162,89 @@ export function splitCaption(text: string, limit: number): { caption: string; re
   return { caption: text.slice(0, cut).trimEnd(), rest: text.slice(cut).trimStart() };
 }
 
+/** Loose view of a Chat SDK card tree node — enough to walk and rebuild the
+ *  `actions` rows without depending on the `chat` package's internal types. */
+interface CardNode {
+  type?: string;
+  label?: string;
+  children?: CardNode[];
+  [key: string]: unknown;
+}
+
+/**
+ * Pack buttons into rows greedily: start a new row once the current one hits
+ * TELEGRAM_ROW_MAX_BUTTONS or adding the next label would push the row's total
+ * label length past TELEGRAM_ROW_LABEL_BUDGET. A single over-budget label still
+ * gets its own row (the budget check only fires when the row is non-empty).
+ */
+export function chunkButtonRows(buttons: CardNode[]): CardNode[][] {
+  const rows: CardNode[][] = [];
+  let row: CardNode[] = [];
+  let rowLen = 0;
+  for (const btn of buttons) {
+    const len = typeof btn.label === 'string' ? btn.label.length : 0;
+    const rowFull =
+      row.length >= TELEGRAM_ROW_MAX_BUTTONS || (row.length > 0 && rowLen + len > TELEGRAM_ROW_LABEL_BUDGET);
+    if (rowFull) {
+      rows.push(row);
+      row = [];
+      rowLen = 0;
+    }
+    row.push(btn);
+    rowLen += len;
+  }
+  if (row.length > 0) rows.push(row);
+  return rows;
+}
+
+/**
+ * Split each `actions` block whose buttons overflow one readable row into
+ * several single-row `actions` blocks. Recurses into `section` children the
+ * same way the Telegram adapter's `collectInlineKeyboardRows` does. Non-actions
+ * children pass through untouched, order preserved. Non-mutating — the card is
+ * rebuilt from fresh objects.
+ */
+function relayoutRows(children: CardNode[]): CardNode[] {
+  const out: CardNode[] = [];
+  for (const child of children) {
+    if (child.type === 'actions' && Array.isArray(child.children)) {
+      for (const row of chunkButtonRows(child.children)) {
+        out.push({ ...child, children: row });
+      }
+      continue;
+    }
+    if (child.type === 'section' && Array.isArray(child.children)) {
+      out.push({ ...child, children: relayoutRows(child.children) });
+      continue;
+    }
+    out.push(child);
+  }
+  return out;
+}
+
+/**
+ * Re-lay a card's inline-keyboard buttons across multiple rows so long labels
+ * stay readable on Telegram. Returns the card unchanged when it isn't a card
+ * node or has no children.
+ */
+export function relayoutCardKeyboard(card: unknown): unknown {
+  if (!card || typeof card !== 'object') return card;
+  const node = card as CardNode;
+  if (node.type !== 'card' || !Array.isArray(node.children)) return card;
+  return { ...node, children: relayoutRows(node.children) };
+}
+
 export function wrapPostMessageWithRich(
   senders: TelegramSenders,
   originalPostMessage: PostMessageFn,
   sanitize: (text: string) => string,
 ): PostMessageFn {
   return async (threadId, content) => {
-    if (content.card) return originalPostMessage(threadId, content);
+    if (content.card) {
+      // Re-chunk the card's inline-keyboard buttons into multiple rows so long
+      // option labels don't truncate to "Историю…роче" in a single crammed row.
+      return originalPostMessage(threadId, { ...content, card: relayoutCardKeyboard(content.card) });
+    }
 
     const markdown = content.markdown ?? '';
     const files = content.files;
