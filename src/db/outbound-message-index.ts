@@ -15,20 +15,24 @@ import { getDb } from './connection.js';
  * the latest delivery timestamp. The PK collision is unlikely in practice
  * (platform message ids are platform-unique).
  */
-export function recordOutboundMessage(
+export async function recordOutboundMessage(
   channelType: string,
   platformId: string,
   platformMessageId: string,
   agentGroupId: string,
   sessionId: string,
-): void {
-  getDb()
-    .prepare(
-      `INSERT OR REPLACE INTO outbound_message_index
-       (channel_type, platform_id, platform_message_id, agent_group_id, session_id, delivered_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-    )
-    .run(channelType, platformId, platformMessageId, agentGroupId, sessionId);
+): Promise<void> {
+  await getDb().run(
+    `INSERT OR REPLACE INTO outbound_message_index
+     (channel_type, platform_id, platform_message_id, agent_group_id, session_id, delivered_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    channelType,
+    platformId,
+    platformMessageId,
+    agentGroupId,
+    sessionId,
+    new Date().toISOString(),
+  );
 }
 
 /**
@@ -37,16 +41,17 @@ export function recordOutboundMessage(
  * Returns null if the message wasn't sent by any tracked agent (older
  * outbound from before the index existed, or a non-agent message).
  */
-export function findOwningAgent(
+export async function findOwningAgent(
   channelType: string,
   platformId: string,
   platformMessageId: string,
-): { agentGroupId: string; sessionId: string } | null {
-  const row = getDb()
-    .prepare(
-      `SELECT agent_group_id, session_id FROM outbound_message_index
-       WHERE channel_type=? AND platform_id=? AND platform_message_id=?`,
-    )
-    .get(channelType, platformId, platformMessageId) as { agent_group_id: string; session_id: string } | undefined;
+): Promise<{ agentGroupId: string; sessionId: string } | null> {
+  const row = await getDb().get<{ agent_group_id: string; session_id: string }>(
+    `SELECT agent_group_id, session_id FROM outbound_message_index
+     WHERE channel_type=? AND platform_id=? AND platform_message_id=?`,
+    channelType,
+    platformId,
+    platformMessageId,
+  );
   return row ? { agentGroupId: row.agent_group_id, sessionId: row.session_id } : null;
 }
