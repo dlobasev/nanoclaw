@@ -21,14 +21,6 @@ import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } from './adapter.js';
 import { tryConsume } from './telegram-pairing.js';
-import {
-  parseTelegramTarget,
-  sendTelegramRichMessage,
-  wrapPostMessageWithRich,
-  TELEGRAM_RICH_LIMIT,
-  type PostMessageFn,
-  type TelegramSenders,
-} from './telegram-rich.js';
 
 /**
  * Dedicated bot identity, non-threaded platform (supportsThreads:false), so
@@ -371,42 +363,6 @@ export interface TelegramBridgeOptions {
  * claimed by another instance) so the registry surfaces its normal
  * "credentials missing, skipping" warning.
  */
-/**
- * Bot API 10.1 sendPhoto. The chat adapter's outbound path sends every
- * attachment as a document, which Telegram renders as a file row instead of an
- * inline preview; a single image goes through this instead. See telegram-rich.ts
- * for the routing that calls it.
- */
-async function sendTelegramPhoto(
-  token: string,
-  threadId: string,
-  file: { data: Buffer; filename: string },
-  caption: string,
-): Promise<{ id: string; threadId: string }> {
-  // threadId is the bridge's platform-encoded form "telegram:<chatId>" (see
-  // parseTelegramTarget). It must be decoded — a bare split(':')[0] yields the
-  // "telegram" prefix as chat_id and Telegram answers "chat not found".
-  const { chatId, messageThreadId } = parseTelegramTarget(threadId);
-  const formData = new FormData();
-  formData.append('chat_id', chatId);
-  if (messageThreadId) formData.append('message_thread_id', messageThreadId);
-  formData.append('photo', new Blob([new Uint8Array(file.data)]), file.filename);
-  if (caption) {
-    formData.append('caption', caption);
-    formData.append('parse_mode', 'Markdown');
-  }
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-    method: 'POST',
-    body: formData,
-  });
-  const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
-  if (!json.ok) throw new Error(`Telegram sendPhoto failed: ${json.description ?? 'unknown'}`);
-  // Composite "<chatId>:<message_id>" id — must match the SDK's postMessage form
-  // and extractReplyContext's inbound shape, or owning-agent reply/reaction
-  // lookup misses every photo we send and the reply routes to the wrong agent.
-  return { id: `${chatId}:${json.result!.message_id}`, threadId };
-}
-
 export function createTelegramBridge(options: TelegramBridgeOptions = {}): ChannelAdapter | null {
   const tokenKey = `TELEGRAM_BOT_TOKEN${options.envKeySuffix ? `_${options.envKeySuffix}` : ''}`;
   const token = readEnvFile([tokenKey])[tokenKey];
@@ -422,29 +378,7 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
   const telegramAdapter = createTelegramAdapter({
     botToken: token,
     mode: 'polling',
-    // Default getUpdates excludes message_reaction. Opt in so the bridge
-    // can deliver user reactions as inbound events.
-    longPolling: {
-      allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
-    },
   });
-
-  // Bot API 10.1 outbound the chat adapter does not implement: single-image
-  // attachments go through sendPhoto for an inline preview, and long markdown
-  // into a DM goes through sendRichMessage for up to 32 KiB in one bubble.
-  // Both fall back to the adapter's own path on failure, so a message is never
-  // silently lost. The sanitize hook is a pass-through: @chat-adapter/telegram
-  // >= 4.29 parses CommonMark itself, and the legacy-Markdown sanitizer this
-  // used to pass would downgrade **bold** to single-star emphasis.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const adapterAny = telegramAdapter as any;
-  const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
-  const senders: TelegramSenders = {
-    sendPhoto: (threadId, file, caption) => sendTelegramPhoto(token, threadId, file, caption),
-    sendRichMessage: (threadId, markdown) => sendTelegramRichMessage(token, threadId, markdown),
-  };
-  adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, (text) => text);
-
   const bridge = createChatSdkBridge({
     adapter: telegramAdapter,
     instance: options.instanceKey, // undefined ⇒ default instance (keyed by channelType)
@@ -457,12 +391,7 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
     // sanitizer this replaced was written for the old converter and, run in
     // front of the new one, downgraded **bold** to *single-star* — which the
     // adapter then parsed as emphasis and rendered as _italic_.
-    //
-    // maxTextLength matches the rich-message ceiling so a single reply up to
-    // 32 KiB reaches the postMessage wrapper as one chunk and the wrapper picks
-    // plain vs rich per call. Larger payloads still chunk at the bridge layer,
-    // and each chunk gets the same per-call routing decision.
-    maxTextLength: TELEGRAM_RICH_LIMIT,
+    maxTextLength: 4000,
   });
 
   const botUsernamePromise = fetchBotUsername(token);
