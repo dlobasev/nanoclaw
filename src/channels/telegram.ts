@@ -13,14 +13,6 @@ import { upsertUser } from '../modules/permissions/db/users.js';
 import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
 import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js';
 import { registerChannelAdapter } from './channel-registry.js';
-import {
-  TELEGRAM_RICH_LIMIT,
-  parseTelegramTarget,
-  sendTelegramRichMessage,
-  wrapPostMessageWithRich,
-  type PostMessageFn,
-  type TelegramSenders,
-} from './telegram-rich.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
 import { tryConsume } from './telegram-pairing.js';
 
@@ -50,20 +42,9 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 5
 function extractReplyContext(raw: Record<string, any>): ReplyContext | null {
   if (!raw.reply_to_message) return null;
   const reply = raw.reply_to_message;
-  // The chat-sdk normalizes Telegram message ids to "<chatId>:<message_id>"
-  // for delivery + outbound_message_index. The raw Telegram update gives us
-  // only the bare numeric `reply.message_id`, so we have to rebuild the
-  // prefixed form here from the parent message's `raw.chat.id` (the chat is
-  // the same for the reply and the message being replied to — Telegram has
-  // no cross-chat replies). Without the prefix, owning-agent lookup in
-  // router.ts misses every reply and falls back to pattern routing.
-  const chatId = raw.chat?.id;
-  const rawMsgId = reply.message_id;
-  const messageId = rawMsgId != null ? (chatId != null ? `${chatId}:${rawMsgId}` : String(rawMsgId)) : undefined;
   return {
     text: reply.text || reply.caption || '',
     sender: reply.from?.first_name || reply.from?.username || 'Unknown',
-    messageId,
   };
 }
 
@@ -214,46 +195,6 @@ function createPairingInterceptor(
   };
 }
 
-// Vercel Chat SDK's @chat-adapter/telegram@4.30.0 outbound predates Bot API
-// 10.1 — no sendPhoto, no sendRichMessage. We monkey-patch the adapter's
-// postMessage with two layers:
-//   1. Single-image attachments go through sendPhoto for inline previews
-//      instead of sendDocument's file-attachment rendering.
-//   2. Long markdown (text-only > 4000 chars, or image+text > 1024 chars)
-//      goes through sendRichMessage for up to 32 KiB with native rich
-//      markdown parsing. See telegram-rich.ts.
-// Both layers fall back to the original SDK path on failure so we never
-// silently lose a message.
-async function sendTelegramPhoto(
-  token: string,
-  threadId: string,
-  file: { data: Buffer; filename: string },
-  caption: string,
-): Promise<{ id: string; threadId: string }> {
-  // threadId is the bridge's platform-encoded form "telegram:<chatId>" (see
-  // parseTelegramTarget). It must be decoded — a bare split(':')[0] yields the
-  // "telegram" prefix as chat_id and Telegram answers "chat not found".
-  const { chatId, messageThreadId } = parseTelegramTarget(threadId);
-  const formData = new FormData();
-  formData.append('chat_id', chatId);
-  if (messageThreadId) formData.append('message_thread_id', messageThreadId);
-  formData.append('photo', new Blob([new Uint8Array(file.data)]), file.filename);
-  if (caption) {
-    formData.append('caption', caption);
-    formData.append('parse_mode', 'Markdown');
-  }
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-    method: 'POST',
-    body: formData,
-  });
-  const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
-  if (!json.ok) throw new Error(`Telegram sendPhoto failed: ${json.description ?? 'unknown'}`);
-  // Composite "<chatId>:<message_id>" id — must match the SDK's postMessage form
-  // and extractReplyContext's inbound shape, or owning-agent reply/reaction
-  // lookup misses every photo we send and the reply routes to the wrong agent.
-  return { id: `${chatId}:${json.result!.message_id}`, threadId };
-}
-
 registerChannelAdapter('telegram', {
   factory: () => {
     const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
@@ -262,36 +203,14 @@ registerChannelAdapter('telegram', {
     const telegramAdapter = createTelegramAdapter({
       botToken: token,
       mode: 'polling',
-      // Default getUpdates excludes message_reaction. Opt in so the bridge
-      // can deliver user reactions as inbound events.
-      longPolling: {
-        allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
-      },
     });
-    // Compose the postMessage patch: rich-message routing wraps the
-    // sendPhoto-and-original-fallback pair. The bridge's transformOutboundText
-    // is intentionally NOT set here — rich markdown is a different dialect
-    // than legacy V1, so sanitization happens inside the wrapper only on the
-    // plain-message branches (see telegram-rich.ts).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapterAny = telegramAdapter as any;
-    const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
-    const senders: TelegramSenders = {
-      sendPhoto: (threadId, file, caption) => sendTelegramPhoto(token, threadId, file, caption),
-      sendRichMessage: (threadId, markdown) => sendTelegramRichMessage(token, threadId, markdown),
-    };
-    adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, sanitizeTelegramLegacyMarkdown);
-
     const bridge = createChatSdkBridge({
       adapter: telegramAdapter,
       concurrency: 'concurrent',
       extractReplyContext,
       supportsThreads: false,
-      // maxTextLength matches the rich-message ceiling so single replies up to
-      // 32 KiB reach the wrapper as one chunk; the wrapper picks plain vs rich
-      // per call. Larger payloads still chunk at the bridge layer and each
-      // chunk gets the same per-call routing decision.
-      maxTextLength: TELEGRAM_RICH_LIMIT,
+      transformOutboundText: sanitizeTelegramLegacyMarkdown,
+      maxTextLength: 4000,
     });
 
     const botUsernamePromise = fetchBotUsername(token);
