@@ -363,15 +363,6 @@ export interface TelegramBridgeOptions {
 }
 
 /**
- * Build one Telegram bot identity's bridge from its token. The default bot is
- * the zero-suffix call (used by the registration below); named instances pass
- * a suffix + instance key and get the exact same construction: polling
- * adapter, pairing interceptor, channel-name resolution, TELEGRAM_DEFAULTS
- * declaration. Returns null when the token is missing (or its bot is already
- * claimed by another instance) so the registry surfaces its normal
- * "credentials missing, skipping" warning.
- */
-/**
  * Bot API 10.1 sendPhoto. The chat adapter's outbound path sends every
  * attachment as a document, which Telegram renders as a file row instead of an
  * inline preview; a single image goes through this instead. See telegram-rich.ts
@@ -407,6 +398,15 @@ async function sendTelegramPhoto(
   return { id: `${chatId}:${json.result!.message_id}`, threadId };
 }
 
+/**
+ * Build one Telegram bot identity's bridge from its token. The default bot is
+ * the zero-suffix call (used by the registration below); named instances pass
+ * a suffix + instance key and get the exact same construction: polling
+ * adapter, pairing interceptor, channel-name resolution, TELEGRAM_DEFAULTS
+ * declaration. Returns null when the token is missing (or its bot is already
+ * claimed by another instance) so the registry surfaces its normal
+ * "credentials missing, skipping" warning.
+ */
 export function createTelegramBridge(options: TelegramBridgeOptions = {}): ChannelAdapter | null {
   const tokenKey = `TELEGRAM_BOT_TOKEN${options.envKeySuffix ? `_${options.envKeySuffix}` : ''}`;
   const token = readEnvFile([tokenKey])[tokenKey];
