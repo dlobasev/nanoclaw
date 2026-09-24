@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { DbDriver } from '../driver.js';
 import type { Migration } from './index.js';
 
 /**
@@ -17,8 +17,8 @@ import type { Migration } from './index.js';
 export const moduleOutboundMessageIndex: Migration = {
   version: 16,
   name: 'outbound-message-index',
-  up(db: Database.Database) {
-    db.exec(`
+  async up(db: DbDriver) {
+    await db.exec(`
       CREATE TABLE IF NOT EXISTS outbound_message_index (
         channel_type        TEXT NOT NULL,
         platform_id         TEXT NOT NULL,

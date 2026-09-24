@@ -1,28 +1,45 @@
 /**
- * Telegram channel adapter (v2) — uses Chat SDK bridge, with a pairing
- * interceptor wrapped around onInbound to verify chat ownership before
- * registration. See telegram-pairing.ts for the why.
+ * Telegram channel adapter (v2) — uses Chat SDK bridge, with an inbound
+ * interceptor for setup pairing and the owner/global-admin `/connect_group` command.
+ *
+ * Additional bot identities: set TELEGRAM_INSTANCES=<name>[,<name>...] plus a
+ * per-instance token (TELEGRAM_BOT_TOKEN_<NAME>; name uppercased, dashes to
+ * underscores). Each name registers under the `telegram-<name>` instance key
+ * through the same createTelegramBridge factory as the default bot, so the
+ * interceptor, pairing, and wiring defaults are shared. channelType stays
+ * 'telegram' either way: user ids, formatting, and container config are one
+ * namespace across bots. See .claude/skills/telegram-multi-instance.
  */
 import { createTelegramAdapter } from '@chat-adapter/telegram';
 
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { createMessagingGroup, getMessagingGroupByPlatform, updateMessagingGroup } from '../db/messaging-groups.js';
-import { grantRole, hasAnyOwner } from '../modules/permissions/db/user-roles.js';
+import { grantRole, hasAnyOwner, isGlobalAdmin, isOwner } from '../modules/permissions/db/user-roles.js';
 import { upsertUser } from '../modules/permissions/db/users.js';
 import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
-import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js';
 import { registerChannelAdapter } from './channel-registry.js';
+import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } from './adapter.js';
+import { tryConsume } from './telegram-pairing.js';
 import {
-  TELEGRAM_RICH_LIMIT,
   parseTelegramTarget,
   sendTelegramRichMessage,
   wrapPostMessageWithRich,
+  TELEGRAM_RICH_LIMIT,
   type PostMessageFn,
   type TelegramSenders,
 } from './telegram-rich.js';
-import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
-import { tryConsume } from './telegram-pairing.js';
+
+/**
+ * Dedicated bot identity, non-threaded platform (supportsThreads:false), so
+ * group engagement can never be sticky-per-thread — 'mention' keeps a group
+ * wiring from staying engaged forever in the single shared session.
+ */
+const TELEGRAM_DEFAULTS: ChannelDefaults = {
+  dm: { engageMode: 'pattern', engagePattern: '.', threads: false, unknownSenderPolicy: 'request_approval' },
+  group: { engageMode: 'mention', threads: false, unknownSenderPolicy: 'request_approval' },
+  mentions: 'platform',
+};
 
 /**
  * Retry a one-shot operation that can fail on transient network errors at
@@ -50,20 +67,9 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 5
 function extractReplyContext(raw: Record<string, any>): ReplyContext | null {
   if (!raw.reply_to_message) return null;
   const reply = raw.reply_to_message;
-  // The chat-sdk normalizes Telegram message ids to "<chatId>:<message_id>"
-  // for delivery + outbound_message_index. The raw Telegram update gives us
-  // only the bare numeric `reply.message_id`, so we have to rebuild the
-  // prefixed form here from the parent message's `raw.chat.id` (the chat is
-  // the same for the reply and the message being replied to — Telegram has
-  // no cross-chat replies). Without the prefix, owning-agent lookup in
-  // router.ts misses every reply and falls back to pattern routing.
-  const chatId = raw.chat?.id;
-  const rawMsgId = reply.message_id;
-  const messageId = rawMsgId != null ? (chatId != null ? `${chatId}:${rawMsgId}` : String(rawMsgId)) : undefined;
   return {
     text: reply.text || reply.caption || '',
     sender: reply.from?.first_name || reply.from?.username || 'Unknown',
-    messageId,
   };
 }
 
@@ -94,54 +100,166 @@ function readInboundFields(message: InboundMessage): InboundFields {
   if (message.kind !== 'chat-sdk' || !message.content || typeof message.content !== 'object') {
     return { text: '', authorUserId: null };
   }
-  const c = message.content as { text?: string; author?: { userId?: string } };
-  return { text: c.text ?? '', authorUserId: c.author?.userId ?? null };
+  const text = 'text' in message.content && typeof message.content.text === 'string' ? message.content.text : '';
+  const author = 'author' in message.content ? message.content.author : null;
+  const authorUserId =
+    author && typeof author === 'object' && 'userId' in author && typeof author.userId === 'string'
+      ? author.userId
+      : null;
+  return { text, authorUserId };
 }
 
 /**
- * Build an onInbound interceptor that consumes pairing codes before they
- * reach the router. On match: records the chat + its paired user, promotes
- * the user to owner if the instance has no owner yet, and short-circuits.
- * On miss: forwards to the host.
+ * `/connect_group` only opens Telegram's native picker. The existing
+ * unknown-channel approval flow remains the authority that creates a wiring.
  */
-/**
- * Send a one-shot confirmation back to the paired chat. Best-effort — failures
- * are logged but never propagated, so a Telegram outage can't undo a successful
- * pairing or trigger the interceptor's fail-open path.
- */
-async function sendPairingConfirmation(token: string, platformId: string): Promise<void> {
+function isConnectGroupCommand(text: string, botUsername: string | null): boolean {
+  const command = text.trim().toLowerCase();
+  return (
+    command === '/connect_group' || (botUsername !== null && command === `/connect_group@${botUsername.toLowerCase()}`)
+  );
+}
+
+function isStartGroupConnectCommand(text: string, botUsername: string | null): boolean {
+  return botUsername !== null && text.trim().toLowerCase() === `/start@${botUsername.toLowerCase()} connect`;
+}
+
+function withInboundText(message: InboundMessage, text: string): InboundMessage {
+  if (!message.content || typeof message.content !== 'object' || Array.isArray(message.content)) return message;
+  return { ...message, content: { ...message.content, text } };
+}
+
+async function sendTelegramMessage(token: string, platformId: string, body: Record<string, unknown>): Promise<void> {
   const chatId = platformId.split(':').slice(1).join(':');
   if (!chatId) return;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: 'Pairing success! Head back to the NanoClaw installer to finish setup.',
-      }),
+      body: JSON.stringify({ chat_id: chatId, ...body }),
     });
     if (!res.ok) {
-      log.warn('Telegram pairing confirmation non-OK', { status: res.status });
+      log.warn('Telegram sendMessage non-OK', { status: res.status });
     }
   } catch (err) {
-    log.warn('Telegram pairing confirmation failed', { err });
+    log.warn('Telegram sendMessage failed', { err });
   }
 }
 
-function createPairingInterceptor(
+function sendConnectGroupReply(token: string, platformId: string, text: string, botUsername?: string): Promise<void> {
+  return sendTelegramMessage(token, platformId, {
+    text,
+    ...(botUsername
+      ? {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: 'Add me to a group',
+                  url: `https://t.me/${encodeURIComponent(botUsername)}?startgroup=connect`,
+                },
+              ],
+            ],
+          },
+        }
+      : {}),
+  });
+}
+
+async function handleConnectGroupCommand(
+  token: string,
+  platformId: string,
+  authorUserId: string | null,
+  knownBotUsername: string | null,
+): Promise<string | null> {
+  const userId = authorUserId ? `telegram:${authorUserId}` : null;
+  const isAuthorized = userId ? (await isOwner(userId)) || (await isGlobalAdmin(userId)) : false;
+
+  if (!isAuthorized) {
+    log.warn('Telegram connect-group command denied', { userId, platformId });
+    await sendConnectGroupReply(token, platformId, 'Only a NanoClaw owner or global admin can connect a group.');
+    return null;
+  }
+
+  // Startup's best-effort lookup may have failed transiently. Retry only when
+  // this command actually needs the username; normal inbound stays unchanged.
+  const botUsername = knownBotUsername ?? (await fetchBotUsername(token));
+  if (!botUsername) {
+    await sendConnectGroupReply(
+      token,
+      platformId,
+      "I couldn't open Telegram's group picker right now. Please try /connect_group again.",
+    );
+    return null;
+  }
+
+  await sendConnectGroupReply(
+    token,
+    platformId,
+    'First, make sure Group Privacy is off in BotFather (changing it requires removing and re-adding me). Then choose a group below and approve the registration card when it arrives.',
+    botUsername,
+  );
+  return botUsername;
+}
+
+/**
+ * Send a one-shot confirmation back to the paired chat. Best-effort — failures
+ * are logged but never propagated, so a Telegram outage can't undo a successful
+ * pairing or trigger the interceptor's fail-open path.
+ */
+async function sendPairingConfirmation(token: string, platformId: string): Promise<void> {
+  await sendTelegramMessage(token, platformId, {
+    text: 'Pairing success! Head back to the NanoClaw installer to finish setup.',
+  });
+}
+
+/**
+ * `instanceKey` is this bot's registry key ('telegram' for the default bot,
+ * 'telegram-<name>' for a named one). Pairing and the messaging-group row are
+ * instance-exact: a code issued for one bot never pairs on another, and a
+ * chat paired on a named bot gets its own row instead of updating the
+ * default bot's.
+ */
+export function createTelegramInboundInterceptor(
   botUsernamePromise: Promise<string | null>,
   hostOnInbound: ChannelSetup['onInbound'],
   token: string,
+  instanceKey: string,
 ): ChannelSetup['onInbound'] {
   return async (platformId, threadId, message) => {
+    const { text, authorUserId } = readInboundFields(message);
+    const botUsername = await botUsernamePromise;
+
+    if (!isGroupPlatformId(platformId) && isConnectGroupCommand(text, botUsername)) {
+      try {
+        const resolvedBotUsername = await handleConnectGroupCommand(token, platformId, authorUserId, botUsername);
+        if (resolvedBotUsername) botUsernamePromise = Promise.resolve(resolvedBotUsername);
+      } catch (err) {
+        // A recognized host command is consumed even when authorization or DB
+        // access fails; forwarding it would turn a denied control action into
+        // an ordinary agent prompt.
+        log.error('Telegram connect-group command failed', { err, platformId, authorUserId });
+      }
+      return;
+    }
+
+    if (isGroupPlatformId(platformId) && isStartGroupConnectCommand(text, botUsername)) {
+      await hostOnInbound(
+        platformId,
+        threadId,
+        withInboundText(
+          message,
+          'This Telegram group was just connected. Follow the welcome skill exactly: introduce yourself in this group first, then begin onboarding. Send every response back to this same group.',
+        ),
+      );
+      return;
+    }
+
     try {
-      const botUsername = await botUsernamePromise;
       if (!botUsername) {
         hostOnInbound(platformId, threadId, message);
         return;
       }
-      const { text, authorUserId } = readInboundFields(message);
       if (!text) {
         hostOnInbound(platformId, threadId, message);
         return;
@@ -152,6 +270,7 @@ function createPairingInterceptor(
         platformId,
         isGroup: isGroupPlatformId(platformId),
         adminUserId: authorUserId,
+        instance: instanceKey,
       });
       if (!consumed) {
         hostOnInbound(platformId, threadId, message);
@@ -161,25 +280,29 @@ function createPairingInterceptor(
       // code-bearing message never reaches an agent. Privilege is now a
       // property of the paired user, not the chat: upsert the user, and if
       // this instance has no owner yet, promote them to owner.
-      const existing = getMessagingGroupByPlatform('telegram', platformId);
+      const existing = await getMessagingGroupByPlatform('telegram', platformId, instanceKey);
       if (existing) {
-        updateMessagingGroup(existing.id, {
+        await updateMessagingGroup(existing.id, {
           is_group: consumed.consumed!.isGroup ? 1 : 0,
         });
       } else {
-        createMessagingGroup({
+        await createMessagingGroup({
           id: `mg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           channel_type: 'telegram',
           platform_id: platformId,
+          instance: instanceKey,
           name: consumed.consumed!.name,
           is_group: consumed.consumed!.isGroup ? 1 : 0,
-          unknown_sender_policy: 'strict',
+          // Same context-appropriate default as router auto-create, so a
+          // paired chat behaves like any other telegram messaging group.
+          unknown_sender_policy: (consumed.consumed!.isGroup ? TELEGRAM_DEFAULTS.group : TELEGRAM_DEFAULTS.dm)
+            .unknownSenderPolicy,
           created_at: new Date().toISOString(),
         });
       }
 
       const pairedUserId = `telegram:${consumed.consumed!.adminUserId}`;
-      upsertUser({
+      await upsertUser({
         id: pairedUserId,
         kind: 'telegram',
         display_name: null,
@@ -187,8 +310,8 @@ function createPairingInterceptor(
       });
 
       let promotedToOwner = false;
-      if (!hasAnyOwner()) {
-        grantRole({
+      if (!(await hasAnyOwner())) {
+        await grantRole({
           user_id: pairedUserId,
           role: 'owner',
           agent_group_id: null,
@@ -200,6 +323,7 @@ function createPairingInterceptor(
 
       log.info('Telegram pairing accepted — chat registered', {
         platformId,
+        instance: instanceKey,
         pairedUser: pairedUserId,
         promotedToOwner,
         intent: consumed.intent,
@@ -214,16 +338,45 @@ function createPairingInterceptor(
   };
 }
 
-// Vercel Chat SDK's @chat-adapter/telegram@4.30.0 outbound predates Bot API
-// 10.1 — no sendPhoto, no sendRichMessage. We monkey-patch the adapter's
-// postMessage with two layers:
-//   1. Single-image attachments go through sendPhoto for inline previews
-//      instead of sendDocument's file-attachment rendering.
-//   2. Long markdown (text-only > 4000 chars, or image+text > 1024 chars)
-//      goes through sendRichMessage for up to 32 KiB with native rich
-//      markdown parsing. See telegram-rich.ts.
-// Both layers fall back to the original SDK path on failure so we never
-// silently lose a message.
+/**
+ * Bot id (the part of a token before ':') to the instance key that claimed
+ * it. Telegram allows one getUpdates poller per bot (a second one gets 409
+ * conflicts), so a name whose bot another instance already holds is skipped
+ * at the factory. Keyed by bot id so this module-level map never holds a
+ * secret.
+ */
+const claimedBotIds = new Map<string, string>();
+
+/** Construction knobs for one Telegram bot identity. */
+export interface TelegramBridgeOptions {
+  /**
+   * Uppercased/underscored instance suffix appended to the token env key
+   * after an underscore: 'GH_BOT' reads TELEGRAM_BOT_TOKEN_GH_BOT. Omit for
+   * the default bot's unsuffixed key.
+   */
+  envKeySuffix?: string;
+  /**
+   * Registry/bridge instance key (e.g. 'telegram-gh-bot'). Omit for the
+   * default instance, keyed by channelType.
+   */
+  instanceKey?: string;
+}
+
+/**
+ * Build one Telegram bot identity's bridge from its token. The default bot is
+ * the zero-suffix call (used by the registration below); named instances pass
+ * a suffix + instance key and get the exact same construction: polling
+ * adapter, pairing interceptor, channel-name resolution, TELEGRAM_DEFAULTS
+ * declaration. Returns null when the token is missing (or its bot is already
+ * claimed by another instance) so the registry surfaces its normal
+ * "credentials missing, skipping" warning.
+ */
+/**
+ * Bot API 10.1 sendPhoto. The chat adapter's outbound path sends every
+ * attachment as a document, which Telegram renders as a file row instead of an
+ * inline preview; a single image goes through this instead. See telegram-rich.ts
+ * for the routing that calls it.
+ */
 async function sendTelegramPhoto(
   token: string,
   threadId: string,
@@ -254,73 +407,125 @@ async function sendTelegramPhoto(
   return { id: `${chatId}:${json.result!.message_id}`, threadId };
 }
 
+export function createTelegramBridge(options: TelegramBridgeOptions = {}): ChannelAdapter | null {
+  const tokenKey = `TELEGRAM_BOT_TOKEN${options.envKeySuffix ? `_${options.envKeySuffix}` : ''}`;
+  const token = readEnvFile([tokenKey])[tokenKey];
+  if (!token) return null;
+  const instanceKey = options.instanceKey ?? 'telegram';
+  const botId = token.split(':')[0];
+  const holder = claimedBotIds.get(botId);
+  if (holder !== undefined && holder !== instanceKey) {
+    log.warn('Telegram bot token already in use by another instance, skipping', { instance: instanceKey, holder });
+    return null;
+  }
+  claimedBotIds.set(botId, instanceKey);
+  const telegramAdapter = createTelegramAdapter({
+    botToken: token,
+    mode: 'polling',
+    // Default getUpdates excludes message_reaction. Opt in so the bridge
+    // can deliver user reactions as inbound events.
+    longPolling: {
+      allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
+    },
+  });
+
+  // Bot API 10.1 outbound the chat adapter does not implement: single-image
+  // attachments go through sendPhoto for an inline preview, and long markdown
+  // into a DM goes through sendRichMessage for up to 32 KiB in one bubble.
+  // Both fall back to the adapter's own path on failure, so a message is never
+  // silently lost. The sanitize hook is a pass-through: @chat-adapter/telegram
+  // >= 4.29 parses CommonMark itself, and the legacy-Markdown sanitizer this
+  // used to pass would downgrade **bold** to single-star emphasis.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const adapterAny = telegramAdapter as any;
+  const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
+  const senders: TelegramSenders = {
+    sendPhoto: (threadId, file, caption) => sendTelegramPhoto(token, threadId, file, caption),
+    sendRichMessage: (threadId, markdown) => sendTelegramRichMessage(token, threadId, markdown),
+  };
+  adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, (text) => text);
+
+  const bridge = createChatSdkBridge({
+    adapter: telegramAdapter,
+    instance: options.instanceKey, // undefined ⇒ default instance (keyed by channelType)
+    concurrency: 'concurrent',
+    extractReplyContext,
+    supportsThreads: false,
+    defaults: TELEGRAM_DEFAULTS,
+    // No transformOutboundText: @chat-adapter/telegram >= 4.29 parses
+    // CommonMark and renders escaped MarkdownV2 itself. The legacy-Markdown
+    // sanitizer this replaced was written for the old converter and, run in
+    // front of the new one, downgraded **bold** to *single-star* — which the
+    // adapter then parsed as emphasis and rendered as _italic_.
+    //
+    // maxTextLength matches the rich-message ceiling so a single reply up to
+    // 32 KiB reaches the postMessage wrapper as one chunk and the wrapper picks
+    // plain vs rich per call. Larger payloads still chunk at the bridge layer,
+    // and each chunk gets the same per-call routing decision.
+    maxTextLength: TELEGRAM_RICH_LIMIT,
+  });
+
+  const botUsernamePromise = fetchBotUsername(token);
+
+  const wrapped: ChannelAdapter = {
+    ...bridge,
+    resolveChannelName: async (platformId: string) => {
+      const chatId = platformId.split(':').slice(1).join(':');
+      if (!chatId) return null;
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId }),
+        });
+        const data = (await res.json()) as { ok?: boolean; result?: { title?: string } };
+        return data.ok ? (data.result?.title ?? null) : null;
+      } catch {
+        return null;
+      }
+    },
+    async setup(hostConfig: ChannelSetup) {
+      const intercepted: ChannelSetup = {
+        ...hostConfig,
+        onInbound: createTelegramInboundInterceptor(botUsernamePromise, hostConfig.onInbound, token, instanceKey),
+      };
+      return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
+    },
+  };
+  return wrapped;
+}
+
+/** Env-key suffix for a named instance: uppercased, dashes to underscores. */
+function instanceEnvKeySuffix(name: string): string {
+  return name.toUpperCase().replace(/-/g, '_');
+}
+
+/** Named-instance entry into createTelegramBridge; exported for the registration test. */
+export function telegramInstanceBridgeFactory(name: string): ChannelAdapter | null {
+  return createTelegramBridge({ envKeySuffix: instanceEnvKeySuffix(name), instanceKey: `telegram-${name}` });
+}
+
 registerChannelAdapter('telegram', {
-  factory: () => {
-    const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
-    if (!env.TELEGRAM_BOT_TOKEN) return null;
-    const token = env.TELEGRAM_BOT_TOKEN;
-    const telegramAdapter = createTelegramAdapter({
-      botToken: token,
-      mode: 'polling',
-      // Default getUpdates excludes message_reaction. Opt in so the bridge
-      // can deliver user reactions as inbound events.
-      longPolling: {
-        allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
-      },
-    });
-    // Compose the postMessage patch: rich-message routing wraps the
-    // sendPhoto-and-original-fallback pair. The bridge's transformOutboundText
-    // is intentionally NOT set here — rich markdown is a different dialect
-    // than legacy V1, so sanitization happens inside the wrapper only on the
-    // plain-message branches (see telegram-rich.ts).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapterAny = telegramAdapter as any;
-    const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
-    const senders: TelegramSenders = {
-      sendPhoto: (threadId, file, caption) => sendTelegramPhoto(token, threadId, file, caption),
-      sendRichMessage: (threadId, markdown) => sendTelegramRichMessage(token, threadId, markdown),
-    };
-    adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, sanitizeTelegramLegacyMarkdown);
-
-    const bridge = createChatSdkBridge({
-      adapter: telegramAdapter,
-      concurrency: 'concurrent',
-      extractReplyContext,
-      supportsThreads: false,
-      // maxTextLength matches the rich-message ceiling so single replies up to
-      // 32 KiB reach the wrapper as one chunk; the wrapper picks plain vs rich
-      // per call. Larger payloads still chunk at the bridge layer and each
-      // chunk gets the same per-call routing decision.
-      maxTextLength: TELEGRAM_RICH_LIMIT,
-    });
-
-    const botUsernamePromise = fetchBotUsername(token);
-
-    const wrapped: ChannelAdapter = {
-      ...bridge,
-      resolveChannelName: async (platformId: string) => {
-        const chatId = platformId.split(':').slice(1).join(':');
-        if (!chatId) return null;
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId }),
-          });
-          const data = (await res.json()) as { ok?: boolean; result?: { title?: string } };
-          return data.ok ? (data.result?.title ?? null) : null;
-        } catch {
-          return null;
-        }
-      },
-      async setup(hostConfig: ChannelSetup) {
-        const intercepted: ChannelSetup = {
-          ...hostConfig,
-          onInbound: createPairingInterceptor(botUsernamePromise, hostConfig.onInbound, token),
-        };
-        return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
-      },
-    };
-    return wrapped;
-  },
+  factory: () => createTelegramBridge(),
+  defaults: TELEGRAM_DEFAULTS,
 });
+
+// Named instances: registration is unconditional for every listed name (a
+// missing token is then reported at boot instead of leaving a bot silently
+// absent), and every registration carries the same TELEGRAM_DEFAULTS
+// declaration as the default bot, so offline creation paths (setup, ncl)
+// resolve declared wiring defaults for named instances too. Names are
+// lowercase kebab so the env-key mapping is one-to-one and the instance key
+// is URL-safe for the bridge.
+for (const raw of (readEnvFile(['TELEGRAM_INSTANCES']).TELEGRAM_INSTANCES ?? '').split(',')) {
+  const name = raw.trim();
+  if (!name) continue;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    log.warn('TELEGRAM_INSTANCES name must match ^[a-z0-9][a-z0-9-]*$, skipping', { name });
+    continue;
+  }
+  registerChannelAdapter(`telegram-${name}`, {
+    factory: () => telegramInstanceBridgeFactory(name),
+    defaults: TELEGRAM_DEFAULTS,
+  });
+}

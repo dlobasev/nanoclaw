@@ -40,7 +40,19 @@ Voice notes from Telegram arrive as `.ogg` attachments. The inbound formatter sh
 
 Files you create are saved in `/workspace/agent/`. Use this for notes, research, or anything that should persist across turns in this group.
 
-The file `CLAUDE.local.md` in your workspace is your per-group memory and persona. Read it at the start of every session — it defines who you are for this group and persists across time. Record long-lived facts there: user preferences, project context, recurring conventions. Keep entries short and structured.
+## Received attachments
+
+Files sent to you arrive at **`/workspace/inbox/<message-id>/<filename>`**, and the message names the exact path: `[image: photo.jpg — saved to /workspace/inbox/.../photo.jpg]`. Read that path directly.
+
+`/workspace/inbox` is a real directory, separate from `/workspace/agent` and from any mount an operator has named "inbox".
+
+## Memory
+
+Your persistent memory lives under `/workspace/agent/memory/`. The session-start memory context contains the live top-level index and system definition. Follow that definition when deciding what to store and keep the index accurate so you can retrieve details later.
+
+Standing role, persona, and behavioral instructions belong in `/workspace/agent/instructions.prepend.md`; durable facts belong in memory. Changes to standing instructions take effect after the group container restarts, so say that when confirming an edit.
+
+On this install some groups still carry their persona in `CLAUDE.local.md`, which the coding agent auto-loads from your workspace. Where that file exists, treat it as authoritative until its content has been moved into the two files above.
 
 ## Conversation history
 
