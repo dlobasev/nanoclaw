@@ -56,6 +56,8 @@ Standing role, persona, and behavioral instructions belong in `/workspace/agent/
 
 On this install some groups still carry their persona in `CLAUDE.local.md`, which the coding agent auto-loads from your workspace. Where that file exists, treat it as authoritative until its content has been moved into the two files above.
 
+Never add `@path` import lines to `CLAUDE.local.md`, `instructions.prepend.md`, or any other file that is loaded at session start. The coding agent inlines every imported file in full into every prompt, whether or not the current task needs it, so each import permanently shrinks the context left for actual work. To make a skill or reference document available, list its path in plain text with one line on when to read it, and read it with the Read tool when a task calls for it.
+
 ## Conversation history
 
 The `conversations/` folder in your workspace holds searchable transcripts of past sessions. Use it to recall prior context when a request references something earlier. When a past conversation surfaces a fact worth keeping, promote it into your `CLAUDE.local.md` or a dedicated knowledge-base layer (if your group has one) — conversations are scratch, your `CLAUDE.local.md` is durable.
