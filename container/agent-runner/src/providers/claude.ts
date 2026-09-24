@@ -57,7 +57,6 @@ const TOOL_ALLOWLIST = [
   'WebSearch',
   'WebFetch',
   'Task',
-  'TaskOutput',
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
@@ -424,7 +423,14 @@ export class ClaudeProvider implements AgentProvider {
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
-        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
+        // The append (agent name + destinations) is rebuilt at every container
+        // start. Left to the SDK default (2.1.267+), Claude Code records the
+        // prompt on a session's first request and resends that record on every
+        // resume, so a resumed agent would keep its old name and destination
+        // list until compaction. snapshot: false renders it fresh each time.
+        systemPrompt: instructions
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions, snapshot: false }
+          : undefined,
         allowedTools: [
           ...TOOL_ALLOWLIST,
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
@@ -437,6 +443,11 @@ export class ClaudeProvider implements AgentProvider {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user', 'local'],
+        // Flag-level settings outrank the group's own settings files. Since
+        // 2.1.275 Claude Code syncs the skills and plugins enabled on the
+        // signed-in claude.ai account into terminal sessions; opt out so an
+        // agent gets the skills nanoclaw mounts, not the operator's own.
+        settings: { syncClaudeAiSkills: false, syncClaudeAiPlugins: false },
         mcpServers: this.mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
