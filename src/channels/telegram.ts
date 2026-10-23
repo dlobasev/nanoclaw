@@ -42,6 +42,17 @@ const TELEGRAM_DEFAULTS: ChannelDefaults = {
 };
 
 /**
+ * Keep `/commands` on the message path. Adapters >= 4.31 send a message that
+ * starts with a bot command to onSlashCommand, which the bridge does not
+ * register, so `/connect_group`, `/start connect` and agent commands were
+ * dropped. Older adapters have no such method, so this is a no-op there.
+ */
+export function keepCommandsAsMessages(adapter: ReturnType<typeof createTelegramAdapter>): void {
+  const a = adapter as unknown as { handleSlashCommandUpdate?: unknown };
+  if (typeof a.handleSlashCommandUpdate === 'function') a.handleSlashCommandUpdate = () => false;
+}
+
+/**
  * Retry a one-shot operation that can fail on transient network errors at
  * cold-start (DNS hiccups, brief upstream outages). Exponential backoff capped
  * at 5 attempts — if the network is truly down we surface it instead of
@@ -428,6 +439,7 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
       allowedUpdates: ['message', 'edited_message', 'callback_query', 'message_reaction'],
     },
   });
+  keepCommandsAsMessages(telegramAdapter);
 
   // Bot API 10.1 outbound the chat adapter does not implement: single-image
   // attachments go through sendPhoto for an inline preview, and long markdown
