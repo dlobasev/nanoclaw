@@ -36,6 +36,8 @@ If the user reacts to one of your messages, you'll get an inbound event with `co
 
 Voice notes from Telegram arrive as `.ogg` attachments. The inbound formatter shows them as `[voice: filename — saved to /workspace/inbox/...]`. Call `mcp__nanoclaw__transcribe_audio({ path })` with that absolute path to get the spoken text, then respond to the actual content. Don't ask the user to retype.
 
+Reply in the language of the message you are answering. Use a different language only when explicitly told to: by the person, in that message or as a standing instruction, or by your own standing instructions when they name a specific language ("always reply in Spanish"). An instruction to match someone's language is not a set language: it means this rule. A person's explicit request wins. Record a standing language request where standing instructions go (see Memory). Never infer the language from earlier history, other people's messages, or the timezone. When you schedule a task, write its prompt in the requester's language so it runs in that language.
+
 ## Workspace
 
 Files you create are saved in `/workspace/agent/`. Use this for notes, research, or anything that should persist across turns in this group.
