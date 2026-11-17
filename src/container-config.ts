@@ -61,10 +61,24 @@ export interface McpStdioServerConfig {
   instructions?: string;
 }
 
+/**
+ * Sign-in options for a remote MCP server whose own authorization server the
+ * agent signs in to (the in-chat OAuth flow in the agent-runner). Carries no
+ * secret: the config is stored in plain text and shown on approval cards.
+ */
+export interface McpOAuthConfig {
+  /**
+   * Space-separated scopes requested at sign-in. Without it the client asks
+   * for every scope the server advertises.
+   */
+  scopes: string;
+}
+
 export interface McpHttpServerConfig {
   type: 'http';
   url: string;
   headers?: Record<string, string>;
+  oauth?: McpOAuthConfig;
   /** See McpStdioServerConfig.plugin — same ownership marker. */
   plugin?: string;
   instructions?: string;
@@ -96,6 +110,8 @@ const CAMEL_SPLIT_RE = /([a-z0-9])([A-Z])/g;
  */
 const MCP_SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** RFC 6749 §3.3 scope-token: printable ASCII except space, `"` and `\`. */
+const OAUTH_SCOPE_TOKEN_RE = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
 
 /** The owning plugin's name when a stored MCP server entry was stamped from a plugin. */
 export function mcpServerPluginOwner(entry: unknown): string | undefined {
@@ -167,16 +183,19 @@ export function parseMcpServerConfig(input: Record<string, unknown>): McpServerC
       }
     }
     const headers = parseStringRecord(input.headers, 'headers');
+    const oauth = parseOAuthConfig(input.oauth);
     return {
       type: 'http',
       url,
       ...(headers === undefined ? {} : { headers }),
+      ...(oauth === undefined ? {} : { oauth }),
       ...(instructions === undefined ? {} : { instructions }),
     };
   }
   if (command === undefined) throw new Error('Provide exactly one of command or url');
 
   if (input.headers !== undefined) throw new Error('headers is only valid with url');
+  if (input.oauth !== undefined) throw new Error('oauth is only valid with url');
   const args = input.args ?? [];
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) {
     throw new Error('args must be a JSON array of strings');
@@ -195,6 +214,28 @@ export function parseMcpServerConfig(input: Record<string, unknown>): McpServerC
     ...(cwd === undefined ? {} : { cwd }),
     ...(instructions === undefined ? {} : { instructions }),
   };
+}
+
+/**
+ * Duplicated in container/agent-runner/src/mcp-tools/self-mod.ts
+ * (parseOAuthInput); keep the two in sync.
+ */
+function parseOAuthConfig(value: unknown): McpOAuthConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('oauth must be a JSON object');
+  }
+  const unknownKeys = Object.keys(value).filter((key) => key !== 'scopes');
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `oauth supports only "scopes"; unknown: ${unknownKeys.map((key) => JSON.stringify(key)).join(', ')}`,
+    );
+  }
+  const scopes = (value as Record<string, unknown>).scopes;
+  if (typeof scopes !== 'string' || !scopes.split(' ').every((token) => OAUTH_SCOPE_TOKEN_RE.test(token))) {
+    throw new Error('oauth.scopes must be OAuth scope tokens separated by single spaces');
+  }
+  return { scopes };
 }
 
 function parseStringRecord(value: unknown, flag: string): Record<string, string> | undefined {

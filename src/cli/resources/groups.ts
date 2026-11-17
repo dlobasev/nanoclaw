@@ -501,7 +501,8 @@ registerResource({
       description:
         'Add an MCP server to a group. Requires `ncl groups restart` to take effect. ' +
         'Use --id <group-id> --name <server-name> with either --command <cmd> [--args <json-array>] [--env <json-object>] ' +
-        'or --url <url> [--headers <json-object>] (HTTPS, or plain HTTP for localhost / host.docker.internal).',
+        'or --url <url> [--headers <json-object>] [--oauth <json-object>] (HTTPS, or plain HTTP for localhost / host.docker.internal). ' +
+        '--oauth \'{"scopes":"<space-separated scopes>"}\' limits what the agent asks for when it signs in to that server in chat.',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -526,6 +527,7 @@ registerResource({
           args: args.args === undefined ? undefined : JSON.parse(String(args.args)),
           env: args.env === undefined ? undefined : JSON.parse(String(args.env)),
           headers: args.headers === undefined ? undefined : JSON.parse(String(args.headers)),
+          oauth: args.oauth === undefined ? undefined : JSON.parse(String(args.oauth)),
         });
         await updateContainerConfigJson(id, 'mcp_servers', servers);
 

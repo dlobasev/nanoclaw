@@ -99,7 +99,9 @@ const SECRET_QUERY_KEY_RE =
 /** camelCase → snake_case before matching, so `authToken` hits the word list. */
 const CAMEL_SPLIT_RE = /([a-z0-9])([A-Z])/g;
 
-type ParsedMcpServer = { type: 'http'; url: string } | { command: string; args: string[]; env: Record<string, string> };
+type ParsedMcpServer =
+  | { type: 'http'; url: string; oauth?: { scopes: string } }
+  | { command: string; args: string[]; env: Record<string, string> };
 
 /**
  * Names and env keys reach provider config writers with structural syntax —
@@ -109,6 +111,25 @@ type ParsedMcpServer = { type: 'http'; url: string } | { command: string; args: 
  */
 const MCP_SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** RFC 6749 §3.3 scope-token: printable ASCII except space, `"` and `\`. */
+const OAUTH_SCOPE_TOKEN_RE = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
+
+/** Mirrors the host's parseOAuthConfig (src/container-config.ts); keep the two in sync. */
+function parseOAuthInput(value: unknown): { oauth?: { scopes: string } } | { error: string } {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { error: 'oauth must be an object' };
+  }
+  const unknownKeys = Object.keys(value).filter((key) => key !== 'scopes');
+  if (unknownKeys.length > 0) {
+    return { error: `oauth supports only "scopes"; unknown: ${unknownKeys.map((key) => JSON.stringify(key)).join(', ')}` };
+  }
+  const scopes = (value as Record<string, unknown>).scopes;
+  if (typeof scopes !== 'string' || !scopes.split(' ').every((token) => OAUTH_SCOPE_TOKEN_RE.test(token))) {
+    return { error: 'oauth.scopes must be OAuth scope tokens separated by single spaces' };
+  }
+  return { oauth: { scopes } };
+}
 
 /**
  * Mirrors the host's parseMcpServerConfig (src/container-config.ts) — the
@@ -145,9 +166,12 @@ function parseMcpServerInput(args: Record<string, unknown>): { config: ParsedMcp
         };
       }
     }
-    return { config: { type: 'http', url } };
+    const oauth = parseOAuthInput(args.oauth);
+    if ('error' in oauth) return oauth;
+    return { config: { type: 'http', url, ...oauth } };
   }
   if (command === undefined) return { error: 'Provide exactly one of command or url' };
+  if (args.oauth !== undefined) return { error: 'oauth is only valid with url' };
 
   const commandArgs = args.args ?? [];
   if (!Array.isArray(commandArgs) || !commandArgs.every((arg) => typeof arg === 'string')) {
@@ -184,6 +208,13 @@ export const addMcpServer: McpToolDefinition = {
         },
         args: { type: 'array', items: { type: 'string' }, description: 'Command arguments' },
         env: { type: 'object', description: 'Environment variables for the server' },
+        oauth: {
+          type: 'object',
+          description:
+            'Only with `url`, for a server you sign in to in chat (see the mcp-auth module). `scopes`: the space-separated OAuth scopes to request instead of every scope the server advertises.',
+          properties: { scopes: { type: 'string' } },
+          required: ['scopes'],
+        },
       },
       required: ['name'],
     },

@@ -12,11 +12,18 @@ import type { ResolvedRuntimeConfiguration } from '../provider-contracts/registr
 // contract — registration is two-step so it compiles on a core without one.
 import {
   SDK_DISALLOWED_TOOLS,
+  mcpAllowPattern,
   type resolveClaudeExecutionPolicy,
   type resolveClaudeInference,
   type resolveClaudeMcpServers,
   type resolveClaudeMemoryRuntime,
 } from './claude-config.js';
+import {
+  MCP_AUTH_SERVER_NAME,
+  asMcpOAuthControl,
+  createMcpAuthServer,
+  remoteMcpServerNames,
+} from './claude-mcp-auth.js';
 // Transcript archiving and rotation are this provider's own concern: both
 // read the SDK's on-disk .jsonl, which no other provider has.
 import { archiveClaudeTranscript, rotateClaudeContinuation } from './claude-history.js';
@@ -281,6 +288,25 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    // In-chat OAuth for the group's remote MCP servers (claude-mcp-auth.ts).
+    // Built per query: its tools drive this query's control requests, which
+    // exist once sdkQuery has returned — tools only run after that.
+    const remoteServers = remoteMcpServerNames(this.mcp.mcpServers);
+    if (remoteServers.length > 0 && MCP_AUTH_SERVER_NAME in this.mcp.mcpServers) {
+      log(`Configured MCP server "${MCP_AUTH_SERVER_NAME}" is replaced by the built-in sign-in server`);
+    }
+    const mcpServers =
+      remoteServers.length === 0
+        ? this.mcp.mcpServers
+        : {
+            ...this.mcp.mcpServers,
+            [MCP_AUTH_SERVER_NAME]: createMcpAuthServer(remoteServers, () => asMcpOAuthControl(sdkResult)),
+          };
+    const allowedTools =
+      remoteServers.length === 0
+        ? [...this.mcp.allowedTools]
+        : [...this.mcp.allowedTools, mcpAllowPattern(MCP_AUTH_SERVER_NAME)];
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
@@ -296,7 +322,7 @@ export class ClaudeProvider implements AgentProvider {
         systemPrompt: instructions
           ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions, snapshot: false }
           : undefined,
-        allowedTools: [...this.mcp.allowedTools],
+        allowedTools,
         disallowedTools: [...this.executionPolicy.disallowedTools],
         // The SDK emits `assistant` only per completed content block, so a long
         // block is silent and the host sweep kills the container mid-generation.
@@ -315,7 +341,7 @@ export class ClaudeProvider implements AgentProvider {
         // input can never override them. Both are Settings members rather
         // than query options, which is why they ride `settings`.
         settings: { ...this.inference.settings, ...this.executionPolicy.settings },
-        mcpServers: this.mcp.mcpServers,
+        mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],

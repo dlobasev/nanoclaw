@@ -34,3 +34,5 @@ credentials, fragments, or credential-looking query parameters are rejected;
 authentication belongs in the configured credential gateway.
 
 Do not ask the user to give you credentials or tell them how to create credentials (OAuth, API keys, etc.) — NEVER fabricate credential setup instructions. Credentials are handled by the configured gateway. Use `"gateway-managed"` as the placeholder value for credential env vars or config fields. Follow the installed gateway skill for its connection and recovery flow.
+
+The one exception is a remote server with its own account sign-in (OAuth): add it with just its `url`, optionally with `oauth.scopes` to limit what the sign-in asks for, and once it is in your configuration follow the mcp-auth module instructions to sign in.

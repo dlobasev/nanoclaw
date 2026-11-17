@@ -178,6 +178,31 @@ describe('parseMcpServerConfig', () => {
     );
   });
 
+  it('accepts oauth scopes on http entries and rejects them on stdio entries', () => {
+    const scopes = 'mcp:account launches:read https://www.googleapis.com/auth/gmail.readonly';
+    expect(parseMcpServerConfig({ url: 'https://mcp.example.com/mcp', oauth: { scopes } })).toEqual({
+      type: 'http',
+      url: 'https://mcp.example.com/mcp',
+      oauth: { scopes },
+    });
+    expect(() => parseMcpServerConfig({ command: 'server', oauth: { scopes } })).toThrow(/only valid with url/);
+  });
+
+  it.each([
+    ['not an object', 'mcp:account', /must be a JSON object/],
+    ['an array', ['mcp:account'], /must be a JSON object/],
+    ['missing scopes', {}, /scope tokens/],
+    ['non-string scopes', { scopes: ['a'] }, /scope tokens/],
+    ['empty scopes', { scopes: '' }, /scope tokens/],
+    ['a double space', { scopes: 'a  b' }, /scope tokens/],
+    ['a quote', { scopes: 'a"b' }, /scope tokens/],
+    ['a backslash', { scopes: 'a\\b' }, /scope tokens/],
+    ['a newline', { scopes: 'a\nb' }, /scope tokens/],
+    ['a secret-looking extra key', { scopes: 'a', clientSecret: 'x' }, /only "scopes"/],
+  ])('rejects oauth with %s', (_name, oauth, message) => {
+    expect(() => parseMcpServerConfig({ url: 'https://mcp.example.com/mcp', oauth })).toThrow(message);
+  });
+
   it.each(['./sub', '${PLUGIN_ROOT}', '${PLUGIN_ROOT}/srv', '${PLUGIN_DATA}', '${PLUGIN_DATA}/cache'])(
     'accepts the fixed cwd form %s',
     (cwd) => {
@@ -206,6 +231,8 @@ describe('sanitizeStoredMcpServers', () => {
       {
         good: { command: 'server', args: [], env: {}, pluginRoot: `${CONTAINER_PLUGINS_DIR}/sdr` },
         remote: { type: 'http', url: 'https://mcp.example.com/mcp' },
+        scoped: { type: 'http', url: 'https://mcp.example.com/mcp', oauth: { scopes: 'read' } },
+        badScopes: { type: 'http', url: 'https://mcp.example.com/mcp', oauth: { scopes: 'a"b' } },
         badRoot: { command: 'server', pluginRoot: '/etc' },
         broken: { url: 'http://insecure.example.com' },
         notAnObject: 42,
@@ -213,7 +240,8 @@ describe('sanitizeStoredMcpServers', () => {
       },
       'test-group',
     );
-    expect(Object.keys(sanitized).sort()).toEqual(['badRoot', 'good', 'remote']);
+    expect(Object.keys(sanitized).sort()).toEqual(['badRoot', 'good', 'remote', 'scoped']);
+    expect(sanitized.scoped).toMatchObject({ oauth: { scopes: 'read' } });
     expect(sanitized.good).toMatchObject({ pluginRoot: `${CONTAINER_PLUGINS_DIR}/sdr` });
     expect(sanitized.badRoot).not.toHaveProperty('pluginRoot');
   });
@@ -256,7 +284,13 @@ describe('host/container validation parity', () => {
     const read = (p: string): string => fs.readFileSync(path.join(process.cwd(), p), 'utf-8');
     const host = read('src/container-config.ts');
     const container = read('container/agent-runner/src/mcp-tools/self-mod.ts');
-    for (const name of ['SECRET_QUERY_KEY_RE', 'CAMEL_SPLIT_RE', 'MCP_SERVER_NAME_RE', 'ENV_KEY_RE']) {
+    for (const name of [
+      'SECRET_QUERY_KEY_RE',
+      'CAMEL_SPLIT_RE',
+      'MCP_SERVER_NAME_RE',
+      'ENV_KEY_RE',
+      'OAUTH_SCOPE_TOKEN_RE',
+    ]) {
       const literal = (src: string): string | undefined =>
         src
           .match(new RegExp(`const ${name} =\\s*([^;]+);`))?.[1]

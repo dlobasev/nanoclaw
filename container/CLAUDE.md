@@ -77,6 +77,11 @@ client-side login that stores a token in the container, and do not request real
 tokens through chat or MCP environment settings. A documented placeholder may
 satisfy a client's local authentication check; it is not a connected account.
 
+One exception: a remote MCP server already in your configuration that has its
+own account sign-in is connected with the `mcp_auth` tools (see the mcp-auth
+module instructions). The agent runtime runs that sign-in and keeps its tokens;
+it is not a client-side login, and you never see or handle the tokens.
+
 Report success only after a credentialed request succeeds. Present a gateway's
 actual `connect_url` when one is returned. If setup requires the operator console,
 explain that step accurately; do not invent an authorization link or promise

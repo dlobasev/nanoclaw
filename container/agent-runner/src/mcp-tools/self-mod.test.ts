@@ -60,6 +60,37 @@ describe('add_mcp_server', () => {
     expect(getUndeliveredMessages()).toHaveLength(0);
   });
 
+  it('carries oauth scopes for a url server into the approval payload', async () => {
+    const result = await addMcpServer.handler({
+      name: 'remote',
+      url: 'https://mcp.example.com/mcp',
+      oauth: { scopes: 'mcp:account launches:read' },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(getUndeliveredMessages()[0].content)).toEqual({
+      action: 'add_mcp_server',
+      name: 'remote',
+      type: 'http',
+      url: 'https://mcp.example.com/mcp',
+      oauth: { scopes: 'mcp:account launches:read' },
+    });
+  });
+
+  it('rejects malformed oauth, and oauth on a command server', async () => {
+    for (const args of [
+      { name: 'remote', url: 'https://mcp.example.com/mcp', oauth: 'mcp:account' },
+      { name: 'remote', url: 'https://mcp.example.com/mcp', oauth: {} },
+      { name: 'remote', url: 'https://mcp.example.com/mcp', oauth: { scopes: 'a  b' } },
+      { name: 'remote', url: 'https://mcp.example.com/mcp', oauth: { scopes: 'a', clientSecret: 'x' } },
+      { name: 'local', command: 'server', oauth: { scopes: 'a' } },
+    ]) {
+      const result = await addMcpServer.handler(args);
+      expect(result.isError).toBe(true);
+    }
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
   it('rejects command and url together, and neither', async () => {
     for (const args of [
       { name: 'remote', command: 'server', url: 'https://mcp.example.com/mcp' },

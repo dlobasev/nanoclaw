@@ -137,7 +137,16 @@ export type McpServerConfig =
        */
       cwd?: string;
     }
-  | { type: 'http'; url: string; headers?: Record<string, string> };
+  | {
+      type: 'http';
+      url: string;
+      headers?: Record<string, string>;
+      /**
+       * In-chat sign-in options for the server's own OAuth. `scopes` limits
+       * what the sign-in asks for; without it every advertised scope is asked.
+       */
+      oauth?: { scopes: string };
+    };
 
 export interface AgentQuery {
   /** Push a follow-up message into the active query. */
