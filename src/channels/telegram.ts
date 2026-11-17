@@ -10,7 +10,9 @@
  * 'telegram' either way: user ids, formatting, and container config are one
  * namespace across bots. See .claude/skills/telegram-multi-instance.
  */
-import { createTelegramAdapter } from '@chat-adapter/telegram';
+
+import { createTelegramAdapter, TelegramFormatConverter } from '@chat-adapter/telegram';
+import { cardChildToFallbackText, convertEmojiPlaceholders, type CardChild, type CardElement } from 'chat';
 
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
@@ -20,6 +22,7 @@ import { upsertUser } from '../modules/permissions/db/users.js';
 import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } from './adapter.js';
+import * as askQuestion from './ask-question.js';
 import { tryConsume } from './telegram-pairing.js';
 import {
   parseTelegramTarget,
@@ -50,6 +53,76 @@ const TELEGRAM_DEFAULTS: ChannelDefaults = {
 export function keepCommandsAsMessages(adapter: ReturnType<typeof createTelegramAdapter>): void {
   const a = adapter as unknown as { handleSlashCommandUpdate?: unknown };
   if (typeof a.handleSlashCommandUpdate === 'function') a.handleSlashCommandUpdate = () => false;
+}
+
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * Refuse a question card that Telegram would cut. The adapter sends a card as
+ * MarkdownV2 and cuts it past 4,096 with its buttons kept, and lists, links
+ * and email addresses grow well past double on the way. A core without
+ * CardTooLongError has no refusal to raise, so there this is a no-op.
+ */
+export function refuseCutCards(adapter: ReturnType<typeof createTelegramAdapter>): void {
+  const { CardTooLongError } = askQuestion as { CardTooLongError?: new (reason: string) => Error };
+  if (!CardTooLongError) return;
+  const converter = new TelegramFormatConverter();
+  // Match the adapter's card rendering before its truncation step.
+  const sentLength = (card: CardElement): number => {
+    const fallback = (child: CardChild): string | null =>
+      child.type === 'divider'
+        ? '---'
+        : child.type === 'section'
+          ? child.children.map(fallback).filter(Boolean).join('\n')
+          : cardChildToFallbackText(child);
+    const parts = [card.title && `**${card.title}**`, card.subtitle, ...card.children.map(fallback)];
+    return convertEmojiPlaceholders(converter.fromMarkdown(parts.filter(Boolean).join('\n')), 'gchat').length;
+  };
+  // Card titles are plain text. The Telegram adapter interpolates them into
+  // Markdown, so escape at this boundary (Slack instead uses a plain header).
+  // `&` too: the adapter's parser decodes `&#x202E;` into a hidden character.
+  const literalTitle = (card: CardElement): CardElement => ({
+    ...card,
+    title: card.title?.replace(/[\\`*_~[\]()<>&]/g, '\\$&'),
+  });
+  const post = adapter.postMessage.bind(adapter);
+  adapter.postMessage = async (...args) => {
+    if (typeof args[1] === 'object' && 'card' in args[1]) args[1] = { ...args[1], card: literalTitle(args[1].card) };
+    const message = args[1];
+    const own = typeof message === 'object' && 'card' in message;
+    const card = own ? message.card : undefined;
+    const hasAnswerButtons = (children: CardChild[]): boolean =>
+      children.some((child) =>
+        child.type === 'actions'
+          ? child.children.some((button) => button.type === 'button')
+          : child.type === 'section' && hasAnswerButtons(child.children),
+      );
+    if (card && hasAnswerButtons(card.children)) {
+      const length = sentLength(card);
+      if (length > TELEGRAM_MESSAGE_LIMIT) {
+        throw new CardTooLongError(
+          `the request is too long to show in full on a card (${length} characters as Telegram sends it, limit ${TELEGRAM_MESSAGE_LIMIT})`,
+        );
+      }
+    }
+    return post(...args);
+  };
+  // The bridge's resolved card ends with a muted decision. Refuse an edit
+  // that would silently cut it, so the bridge retries with title and decision
+  // only. Moving the decision ahead of the request is insufficient: Markdown
+  // spanning the cut can cause the adapter to drop that whole span.
+  const edit = adapter.editMessage.bind(adapter);
+  adapter.editMessage = async (...args) => {
+    if (typeof args[2] === 'object' && 'card' in args[2]) args[2] = { ...args[2], card: literalTitle(args[2].card) };
+    const message = args[2];
+    if (typeof message === 'object' && 'card' in message) {
+      const { card } = message;
+      if (sentLength(card) > TELEGRAM_MESSAGE_LIMIT) {
+        throw new CardTooLongError('the resolved card is too long to show its decision in full on Telegram');
+      }
+    }
+    return edit(...args);
+  };
 }
 
 /**
@@ -440,6 +513,7 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
     },
   });
   keepCommandsAsMessages(telegramAdapter);
+  refuseCutCards(telegramAdapter);
 
   // Bot API 10.1 outbound the chat adapter does not implement: single-image
   // attachments go through sendPhoto for an inline preview, and long markdown
@@ -447,7 +521,8 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
   // Both fall back to the adapter's own path on failure, so a message is never
   // silently lost. The sanitize hook is a pass-through: @chat-adapter/telegram
   // >= 4.29 parses CommonMark itself, and the legacy-Markdown sanitizer this
-  // used to pass would downgrade **bold** to single-star emphasis.
+  // used to pass would downgrade **bold** to single-star emphasis. Wraps the
+  // refuseCutCards postMessage above, so cards still pass its length check.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const adapterAny = telegramAdapter as any;
   const originalPostMessage: PostMessageFn = adapterAny.postMessage.bind(telegramAdapter);
@@ -458,6 +533,8 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
   adapterAny.postMessage = wrapPostMessageWithRich(senders, originalPostMessage, (text) => text);
 
   const bridge = createChatSdkBridge({
+    // refuseCutCards owns title encoding before measuring the actual wire text.
+    ...{ escapeCardTitle: (title: string) => title },
     adapter: telegramAdapter,
     instance: options.instanceKey, // undefined ⇒ default instance (keyed by channelType)
     concurrency: 'concurrent',
@@ -475,6 +552,11 @@ export function createTelegramBridge(options: TelegramBridgeOptions = {}): Chann
     // plain vs rich per call. Larger payloads still chunk at the bridge layer,
     // and each chunk gets the same per-call routing decision.
     maxTextLength: TELEGRAM_RICH_LIMIT,
+    // The agent's own question cap. MarkdownV2 escaping at most doubles plain
+    // text, so a card under it stays within Telegram's 4,096; text that grows
+    // more is refused by refuseCutCards. Spread, so an older core without this
+    // option still type-checks (and ignores it).
+    ...{ maxCardTextLength: 2000 },
   });
 
   const botUsernamePromise = fetchBotUsername(token);
