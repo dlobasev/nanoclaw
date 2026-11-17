@@ -1,0 +1,530 @@
+/**
+ * Discord card limit against the real @chat-adapter/discord: only fetch is
+ * stubbed, so the test sees the exact embed the adapter posts. Discord rejects
+ * an embed description over 4,096.
+ */
+import { createDiscordAdapter } from '@chat-adapter/discord';
+import { Actions, Button, Card, CardText, type CardChild } from 'chat';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { ChannelAdapter, ChannelRegistration } from './adapter.js';
+
+const registrations = vi.hoisted(() => new Map<string, ChannelRegistration>());
+const gateway = vi.hoisted(() => ({ url: '' }));
+
+// The bridge starts a gateway listener on setup; keep it local and note where
+// clicks are forwarded.
+vi.mock('@chat-adapter/discord', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@chat-adapter/discord')>();
+  return {
+    ...real,
+    createDiscordAdapter: (...args: Parameters<typeof real.createDiscordAdapter>) =>
+      Object.assign(real.createDiscordAdapter(...args), {
+        startGatewayListener: async (_options: unknown, _ms: number, _signal: unknown, url: string) => {
+          gateway.url = url;
+          return new Response('{}');
+        },
+      }),
+  };
+});
+
+vi.mock('./channel-registry.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./channel-registry.js')>()),
+  registerChannelAdapter: (name: string, registration: ChannelRegistration) => registrations.set(name, registration),
+}));
+
+vi.mock('../env.js', () => ({
+  readEnvFile: () => ({
+    DISCORD_BOT_TOKEN: 'test-bot-token',
+    DISCORD_PUBLIC_KEY: 'a'.repeat(64),
+    DISCORD_APPLICATION_ID: 'test-app-id',
+  }),
+}));
+
+import { fenceForCard, quoteForCard } from '../card-text.js';
+import { closeDb, initTestDb } from '../db/connection.js';
+import { runMigrations } from '../db/migrations/index.js';
+import { gatewayApprovalPresentation } from '../gateway-approval-presentation.js';
+import type { GatewayApprovalRequest } from '../gateway-providers/gateway-provider-registry.js';
+import { CardTooLongError } from './ask-question.js';
+import { clearButtonsOnCardEdits, escapeDiscordCardText } from './discord.js';
+import { registerQuestionRenderResolver } from './question-render-registry.js';
+
+const posts: Array<{ embeds: Array<{ title?: string; description?: string }>; components?: unknown[] }> = [];
+const patches: Array<{ url: string; body: Record<string, unknown>; refused?: boolean }> = [];
+const realFetch = globalThis.fetch;
+/** Set by a test: Discord refuses every edit of a channel message. */
+let cardEditsFail = false;
+/** Set by a test: as Discord, an edit whose embed description is over 4,096 is refused. */
+let oversizedEditsFail = false;
+/** Card edits Discord has not answered yet, and whether a button removal arrived during one. */
+let editsInFlight = 0;
+let removedDuringEdit = false;
+
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async (url: string, init: { method?: string; body?: string }) => {
+    if (init.method === 'PATCH') patches.push({ url, body: JSON.parse(init.body!) });
+    else posts.push(JSON.parse(init.body!));
+    if (url.endsWith('/messages/@original') && editsInFlight > 0) removedDuringEdit = true;
+    if (init.method === 'PATCH' && /\/channels\/[^/]+\/messages\//.test(url)) {
+      // Slow enough that a removal sent alongside the edit would land inside it.
+      editsInFlight++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      editsInFlight--;
+      if (cardEditsFail) return new Response('{"message":"Internal Server Error"}', { status: 500 });
+      const [embed] = (patches.at(-1)!.body.embeds ?? []) as Array<{ description?: string }>;
+      if (oversizedEditsFail && (embed?.description?.length ?? 0) > 4096) {
+        patches.at(-1)!.refused = true;
+        return new Response('{"message":"Invalid Form Body","code":50035}', { status: 400 });
+      }
+    }
+    return new Response(JSON.stringify({ id: `m${posts.length}`, channel_id: 'c1' }), { status: 200 });
+  }),
+);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  posts.length = 0;
+  patches.length = 0;
+  cardEditsFail = oversizedEditsFail = false;
+  editsInFlight = 0;
+  removedDuringEdit = false;
+});
+
+const adapter = createDiscordAdapter({
+  botToken: 'test-bot-token',
+  publicKey: 'a'.repeat(64),
+  applicationId: 'test-app-id',
+});
+const approve = Actions([Button({ id: 'ncq:q:0', label: 'Approve' })]);
+const card = (blocks: string[], rest: CardChild[] = [approve], title = 'Approve') =>
+  Card({ title, children: [...blocks.map((block) => CardText(block)), ...rest] });
+
+/** The review case: a 572-character resource and six 600-character details. */
+function longGatewayCard() {
+  const summary = {
+    agent: 'agent',
+    action: 'Post a comment',
+    resource: 'POST api.example.com/' + 'r'.repeat(551),
+    reason: 'The gateway policy requires human approval for this request.',
+    details: Array.from({ length: 6 }, (_, i) => ({ label: `Field ${i}`, value: `D${i}${'v'.repeat(596)}E${i}` })),
+  };
+  return gatewayApprovalPresentation({ title: 'Credentials Request', question: '', summary } as GatewayApprovalRequest);
+}
+
+describe('Discord card limit through the bridge', () => {
+  let bridge: ChannelAdapter;
+  const ask = async (title: string, question: string) => {
+    bridge ??= (await registrations.get('discord')!.factory())!;
+    return bridge.deliver('discord:g1:c1', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'appr-long-1',
+        title,
+        question,
+        options: [{ label: 'Approve', style: 'primary' }, { label: 'Reject' }],
+      },
+    });
+  };
+
+  // A pipe doubles when escaped, and the limit counts the escaped text.
+  it('posts a card at the limit whole, as one embed Discord accepts', async () => {
+    await ask('Approve', '|'.repeat(1996));
+    expect(posts).toHaveLength(1);
+    const { description } = posts[0].embeds[0];
+    expect(description!.length).toBeLessThanOrEqual(4096);
+    expect(description!.match(/\|/g)).toHaveLength(1996);
+    expect(posts[0].components?.length).toBeGreaterThan(0);
+  });
+
+  // One plain character, not one more pipe: a pipe adds two and would skip 4,001.
+  it('refuses a card one character longer and posts nothing', async () => {
+    await expect(ask('Approve', '|'.repeat(1996) + 'x')).rejects.toBeInstanceOf(CardTooLongError);
+    expect(posts).toHaveLength(0);
+  });
+
+  // The bridge escapes each block alone; Discord shows them in one embed.
+  const filler = ('w'.repeat(79) + '\n').repeat(24) + 'w'.repeat(38) + '\n';
+  it('keeps a stray backtick in one block from pairing with code in the next', async () => {
+    await ask('Approve', filler + 'x `y\n`foo [Admin](https://evil.test) <@1>`');
+    const { description } = posts[0].embeds[0];
+    expect(description).toContain('x \\`y\n');
+    expect(description).toContain('\n`foo [Admin](https://evil.test) <@1>`');
+  });
+
+  // The cut falls after [Admin, and the next block reopens the fence raw.
+  it("keeps a link in an escaped block from ending in the next block's code", async () => {
+    await ask('Approve', filler + '```x`\n[Admin\n](https://evil.test) <@1>\n```');
+    const { description } = posts[0].embeds[0];
+    expect(description).toContain('\\`\\`\\`x\\`\n\\[Admin\n');
+    expect(description).toContain('\n```\n](https://evil.test) <@1>\n```');
+  });
+
+  // A mark in one block would pair with the same mark in the next block's raw code.
+  it("keeps a mark in one block from pairing with the next block's code", async () => {
+    await ask('Approve', '_scratch ' + filler + '```\ny_ [Admin](https://evil.test) <@1>\n```');
+    const { description } = posts[0].embeds[0];
+    expect(description).toContain('\\_scratch ');
+    expect(description).toContain('\n```\ny_ [Admin](https://evil.test) <@1>\n```');
+  });
+
+  it('refuses a long gateway card instead of cutting it', async () => {
+    const { title, question } = longGatewayCard();
+    await expect(ask(title, question)).rejects.toBeInstanceOf(CardTooLongError);
+    expect(posts).toHaveLength(0);
+  });
+});
+
+describe('Discord card edits and buttons', () => {
+  const resolved = Card({ title: 'Approve', children: [CardText('Approved by admin', { style: 'muted' })] });
+
+  // Discord keeps a message's buttons on an edit that sends no components.
+  it('shows the gap: the adapter edits a message into a card without actions and sends no components', async () => {
+    await adapter.editMessage('discord:g1:c1', 'm9', { card: resolved });
+    expect(patches[0].body).not.toHaveProperty('components');
+  });
+
+  it('sends components: [] when a message is edited into a card without actions', async () => {
+    const wrapped = createDiscordAdapter({
+      botToken: 'test-bot-token',
+      publicKey: 'a'.repeat(64),
+      applicationId: 'test-app-id',
+    });
+    clearButtonsOnCardEdits(wrapped);
+
+    await wrapped.editMessage('discord:g1:c1', 'm9', { card: resolved });
+    expect(patches[0].url).toMatch(/\/channels\/c1\/messages\/m9$/);
+    expect(patches[0].body.components).toEqual([]);
+
+    await wrapped.editMessage('discord:g1:c1', 'm9', { card: card(['Approve?']) });
+    expect((patches[1].body.components as unknown[]).length).toBeGreaterThan(0);
+
+    await wrapped.editMessage('discord:g1:c1', 'm9', { markdown: 'plain text' });
+    expect(patches[2].body).not.toHaveProperty('components');
+  });
+
+  // No click, so no interaction: the host's own edit is the only write.
+  it('is wired into the Discord bridge: a card the host closes loses its buttons', async () => {
+    const bridge = (await registrations.get('discord')!.factory())!;
+    await bridge.deliver('discord:g1:c1', null, {
+      kind: 'chat-sdk',
+      content: {
+        operation: 'edit',
+        messageId: 'm9',
+        terminalCard: { title: 'Approve', question: 'Run it?', resolution: '⏱️ Timed out — no response' },
+      },
+    });
+    expect(patches).toHaveLength(1);
+    expect(patches[0].body.components).toEqual([]);
+  });
+
+  it.each([
+    ['after its edit', false],
+    ['even when Discord refuses its edit', true],
+  ])("removes a clicked card's buttons through the click, %s", async (_name, editFails) => {
+    registerQuestionRenderResolver((id) =>
+      id === 'q-buttons'
+        ? {
+            title: 'Approve',
+            question: 'Run it?',
+            options: [{ label: 'Approve', selectedLabel: 'Approved', value: 'approve' }],
+          }
+        : undefined,
+    );
+    await runMigrations(await initTestDb());
+    const bridge = (await registrations.get('discord')!.factory())!;
+    await bridge.setup({
+      onInbound: () => {},
+      onInboundEvent: () => {},
+      onMetadata: () => {},
+      onAction: async () => 'accepted' as const,
+    });
+    cardEditsFail = editFails;
+    try {
+      const response = await realFetch(gateway.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-discord-gateway-token': 'test-bot-token' },
+        body: JSON.stringify({
+          type: 'GATEWAY_INTERACTION_CREATE',
+          data: {
+            type: 3,
+            id: 'i1',
+            token: 'interaction-token',
+            application_id: 'test-app-id',
+            guild_id: 'g1',
+            channel_id: 'c1',
+            data: { custom_id: 'ncq:q-buttons:0\napprove' },
+            member: { user: { id: 'u1', username: 'ann' } },
+            message: { id: 'm9', embeds: [{ title: 'Approve', description: 'Run it?' }] },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      // The card edit first (refused: the whole card, then the decision only), and
+      // the removal only once Discord has answered the last one.
+      const cardEdit = '/channels/c1/messages/m9';
+      await vi.waitFor(() =>
+        expect(patches.map((patch) => patch.url.replace(/^.*\/api\/v10/, ''))).toEqual([
+          ...(editFails ? [cardEdit, cardEdit] : [cardEdit]),
+          '/webhooks/test-app-id/interaction-token/messages/@original',
+        ]),
+      );
+      // The card edit clears the buttons itself, the same as a close with no
+      // click; the click's removal still follows, for an edit Discord refused.
+      expect(patches[0].body.components).toEqual([]);
+      expect(patches.at(-1)!.body).toEqual({ components: [] });
+      expect(removedDuringEdit).toBe(false);
+    } finally {
+      await bridge.teardown();
+      await closeDb();
+    }
+  });
+});
+
+// A 3,994-character card may be posted. With an 80-character label and a
+// 32-character name its resolved form is past Discord's 4,096.
+describe('a Discord card near the limit when it is clicked', () => {
+  it('shows the decision, and loses its buttons only after that', async () => {
+    const label = 'L'.repeat(80);
+    const name = 'N'.repeat(32);
+    registerQuestionRenderResolver((id) =>
+      id === 'q-near-limit'
+        ? {
+            title: 'Approve',
+            question: 'q'.repeat(3987),
+            options: [{ label: 'Approve', selectedLabel: label, value: 'approve' }],
+          }
+        : undefined,
+    );
+    await runMigrations(await initTestDb());
+    const bridge = (await registrations.get('discord')!.factory())!;
+    await bridge.setup({
+      onInbound: () => {},
+      onInboundEvent: () => {},
+      onMetadata: () => {},
+      onAction: async () => 'accepted' as const,
+    });
+    oversizedEditsFail = true;
+    try {
+      const response = await realFetch(gateway.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-discord-gateway-token': 'test-bot-token' },
+        body: JSON.stringify({
+          type: 'GATEWAY_INTERACTION_CREATE',
+          data: {
+            type: 3,
+            id: 'i1',
+            token: 'interaction-token',
+            application_id: 'test-app-id',
+            guild_id: 'g1',
+            channel_id: 'c1',
+            data: { custom_id: 'ncq:q-near-limit:0\napprove' },
+            member: { user: { id: 'u1', username: 'ann', global_name: name } },
+            message: { id: 'm9', embeds: [{ title: 'Approve', description: 'q'.repeat(3987) }] },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(patches.at(-1)?.url).toMatch(/\/messages\/@original$/));
+      // The card Discord took carries the decision.
+      const taken = patches.filter((patch) => patch.url.endsWith('/channels/c1/messages/m9') && !patch.refused);
+      expect(taken).toHaveLength(1);
+      const [embed] = taken[0].body.embeds as Array<{ title: string; description: string }>;
+      expect(embed.title).toBe('Approve');
+      expect(embed.description).toContain(`${label} by ${name}`);
+      expect(embed.description.length).toBeLessThanOrEqual(4096);
+      // The adapter refuses oversized edits before making an HTTP request.
+      expect(patches.filter((patch) => 'embeds' in patch.body)).toHaveLength(1);
+      // The buttons went last, with no card edit still in flight.
+      expect(patches.at(-1)!.body).toEqual({ components: [] });
+      expect(removedDuringEdit).toBe(false);
+    } finally {
+      await bridge.teardown();
+      await closeDb();
+    }
+  });
+});
+
+describe('escapeDiscordCardText', () => {
+  it('keeps copyable shell code and lone pipes byte-for-byte', () => {
+    const command = 'cat <input | sed "s/](//"';
+    for (const code of ['`' + command + '`', '``' + command + '``', '```\n' + command + '\n```']) {
+      expect(escapeDiscordCardText(code)).toBe(code);
+    }
+    expect(escapeDiscordCardText('cat input | sort')).toBe('cat input | sort');
+    expect(escapeDiscordCardText('\\`<@1>\\`')).toContain('<\u2060@1>');
+  });
+
+  it('breaks masked links, mentions and spoilers, and leaves host wording and escaped values alone', () => {
+    expect(escapeDiscordCardText('[Admin](https://x.co) <@1> ||hidden||')).toBe(
+      '\\[Admin]\u2060(https://x.co) <\u2060@1> |\u2060|\u2060hidden|\u2060|\u2060',
+    );
+    for (const pipes of ['||', '|||', '||||']) {
+      expect(escapeDiscordCardText(`${pipes}hidden${pipes}`)).not.toContain('||');
+    }
+    const host = '*Action:* Post a comment\n*Where:* \\[a\\]\\(b\\)';
+    expect(escapeDiscordCardText(host)).toBe(host);
+  });
+
+  it('keeps a clicker name from posing as a link or another user on the resolved card', async () => {
+    registerQuestionRenderResolver((id) =>
+      id === 'q-name'
+        ? {
+            title: 'Approve',
+            question: 'Run it?',
+            options: [{ label: 'Approve', selectedLabel: 'Approved', value: 'approve' }],
+          }
+        : undefined,
+    );
+    await runMigrations(await initTestDb());
+    const bridge = (await registrations.get('discord')!.factory())!;
+    await bridge.setup({
+      onInbound: () => {},
+      onInboundEvent: () => {},
+      onMetadata: () => {},
+      onAction: async () => 'accepted' as const,
+    });
+    try {
+      const response = await realFetch(gateway.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-discord-gateway-token': 'test-bot-token' },
+        body: JSON.stringify({
+          type: 'GATEWAY_INTERACTION_CREATE',
+          data: {
+            type: 3,
+            id: 'i1',
+            token: 'interaction-token',
+            application_id: 'test-app-id',
+            guild_id: 'g1',
+            channel_id: 'c1',
+            data: { custom_id: 'ncq:q-name:0\napprove' },
+            member: { user: { id: 'u1', username: 'u1', global_name: '[Admin](https://x.co) <@1>' } },
+            message: { id: 'm9', embeds: [{ title: 'Approve', description: 'Run it?' }] },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      // The card edit, not the interaction's button removal.
+      const edits = () => patches.filter((patch) => patch.url.endsWith('/channels/c1/messages/m9'));
+      await vi.waitFor(() => expect(edits()).toHaveLength(1));
+      // Wait for the completed click flow before the next test resets transport state.
+      await vi.waitFor(() => expect(patches.at(-1)?.url).toMatch(/\/messages\/@original$/));
+      const [embed] = edits()[0].body.embeds as Array<{ description: string }>;
+      expect(embed.description).toContain('Approved by \\[Admin]\u2060(https://x.co) <\u2060@1>');
+    } finally {
+      await bridge.teardown();
+      await closeDb();
+    }
+  });
+});
+
+describe('parent Discord resolved-card size budget', () => {
+  it.each([
+    ['request', true],
+    ['q'.repeat(3987), false],
+  ] as const)('keeps request text only when the full edit fits', async (question, keepsRequest) => {
+    const bridge = (await registrations.get('discord')!.factory())!;
+    const resolution = 'Approved by ' + 'n'.repeat(100);
+    await bridge.deliver('discord:g1:c1', null, {
+      kind: 'chat-sdk',
+      content: {
+        operation: 'edit',
+        messageId: 'card',
+        terminalCard: { title: 'Review', question, resolution },
+      },
+    });
+    expect(patches).toHaveLength(1);
+    const embed = (patches[0].body.embeds as Array<{ description: string }>)[0];
+    expect(embed.description.length).toBeLessThanOrEqual(4096);
+    expect(embed.description).toContain(resolution);
+    expect(embed.description.includes(question)).toBe(keepsRequest);
+  });
+  it('refuses a decision that cannot fit even without the request', async () => {
+    const bridge = (await registrations.get('discord')!.factory())!;
+    await expect(
+      bridge.deliver('discord:g1:c1', null, {
+        kind: 'chat-sdk',
+        content: {
+          operation: 'edit',
+          messageId: 'card',
+          terminalCard: { title: 'Review', question: 'Allow?', resolution: 'n'.repeat(4200) },
+        },
+      }),
+    ).rejects.toBeInstanceOf(CardTooLongError);
+    expect(patches).toHaveLength(0);
+  });
+});
+
+describe('Discord prose that CommonMark treats as code', () => {
+  it.each(['    ', '~~~\n', '```\n'])('escapes active syntax after %j', (prefix) => {
+    const result = escapeDiscordCardText(prefix + '[Admin](https://evil.test) <@1> ||hidden||');
+    expect(result).toContain(']\u2060(');
+    expect(result).toContain('<\u2060@1>');
+    expect(result).not.toContain('||');
+  });
+  it('escapes tilde-fenced text even with a closing fence', () => {
+    expect(escapeDiscordCardText('~~~\n<@1>\n~~~')).toContain('<\u2060@1>');
+  });
+  // Discord ends the block at the inner ```, or pairs a stray ``` with the fence.
+  it.each([
+    '```\nx ``` [Admin](https://evil.test) <@1> ||hidden||\n```',
+    '````\n```\n[Admin](https://evil.test) <@1> ||hidden||\n```\n````',
+    'x ``` y\n```\n[Admin](https://evil.test) <@1> ||hidden||\n```',
+    // Discord needs a line in a block, so it skips a blank fence's close.
+    '```\n```\n```\n[Admin](https://evil.test) <@1> ||hidden||\n```',
+    '```sh\n\n```\n```\n[Admin](https://evil.test) <@1> ||hidden||\n```',
+    // Discord ends a quote or subtext at the line, so the span never closes.
+    '> `x\n[Admin](https://evil.test) <@1> ||hidden||`',
+    '-# `x\n[Admin](https://evil.test) <@1> ||hidden||`',
+    // Discord reads \r and \r\n as a line break too.
+    '> `x\r[Admin](https://evil.test) <@1> ||hidden||`',
+    '```\r\n\r\n```\n```\n[Admin](https://evil.test) <@1> ||hidden||\n```',
+  ])('escapes text Discord shows as prose in %j', (text) => {
+    const result = escapeDiscordCardText(text);
+    expect(result).toContain(']\u2060(');
+    expect(result).toContain('<\u2060@1>');
+    expect(result).not.toContain('||');
+  });
+  it.each(['`', '[', '*', '_', '~'])(
+    'puts a backslash before %s in prose, but not before one already escaped',
+    (mark) => {
+      expect(escapeDiscordCardText(`x ${mark}y`)).toBe(`x \\${mark}y`);
+      expect(escapeDiscordCardText(`x \\${mark}y`)).toBe(`x \\${mark}y`);
+      expect(escapeDiscordCardText(`x \\\\${mark}y`)).toBe(`x \\\\\\${mark}y`);
+    },
+  );
+  // A link opened in prose would otherwise end at a ]( kept raw in code.
+  it('keeps a link from running from prose into code', () => {
+    expect(escapeDiscordCardText('[Admin `](https://evil.test)`')).toBe('\\[Admin `](https://evil.test)`');
+  });
+  // Discord pairs a mark in prose with the same mark in raw code, which ends the code early.
+  it.each(['**', '*', '~~', '__', '_'])('keeps %s in prose from pairing with code', (mark) => {
+    const code = '`b' + mark + ' [Admin](https://evil.test) <@1> ||hidden||`';
+    expect(escapeDiscordCardText(mark + 'a ' + code)).toBe(mark.replace(/./g, '\\$&') + 'a ' + code);
+  });
+  it('keeps an agent name from pairing with the message fence of an agent-to-agent card', () => {
+    const fence = fenceForCard('hi_ [Admin](https://evil.test) <@1>');
+    expect(escapeDiscordCardText(`Agent ${quoteForCard('_scratch')} wants to send a message:\n\n${fence}`)).toBe(
+      `Agent "\\_scratch" wants to send a message:\n\n${fence}`,
+    );
+  });
+  // A card's own *Label:* closes on its line, so only one at a line start stays.
+  it('keeps a label at a line start and escapes marks anywhere else', () => {
+    expect(escapeDiscordCardText('*Action:* x *y* _z_ ~~w~~\nq *Agent:* r\n*Bad: x*')).toBe(
+      '*Action:* x \\*y\\* \\_z\\_ \\~\\~w\\~\\~\nq \\*Agent:\\* r\n\\*Bad: x\\*',
+    );
+  });
+  // Discord drops a form feed, so a backslash before one escapes the next mark.
+  it('reads a backslash before a form feed as Discord does', () => {
+    expect(escapeDiscordCardText('\\\f[Admin `](https://evil.test)`')).toBe('\\[Admin `](https://evil.test)`');
+  });
+  it('keeps a ``` fence with single backticks inside byte-for-byte', () => {
+    const code = '```sh\ncat <input; echo `date` ``x``\n```';
+    expect(escapeDiscordCardText(code)).toBe(code);
+  });
+});
